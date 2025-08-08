@@ -1,0 +1,597 @@
+---PATCH-START---
+*** Begin Patch
+*** Update File: pubspec.yaml
+@@
+ dependencies:
++  http: ^0.13.6
++  path_provider: ^2.0.15
++  share_plus: ^8.0.0
++  permission_handler: ^10.4.0
+*** End Patch
+*** Begin Patch
+*** Add File: lib/processing/angle_utils.dart
++// lib/processing/angle_utils.dart
++import 'dart:typed_data';
++import 'dart:ui' as ui;
++import 'dart:math';
++import 'package:flutter/material.dart';
++
++/// Compute tangent slope (dy/dx) at global point (x0,y0) on an ellipse.
++/// ellipse parameters:
++///  - center (h,k)
++///  - a: semi-major axis
++///  - b: semi-minor axis
++///  - phi: rotation of ellipse in radians (counter-clockwise)
++double ellipseTangentSlope({
++  required double x0,
++  required double y0,
++  required double h,
++  required double k,
++  required double a,
++  required double b,
++  required double phi,
++}) {
++  final dx = x0 - h;
++  final dy = y0 - k;
++  final c = cos(phi);
++  final s = sin(phi);
++
++  final xr = dx * c + dy * s;
++  final yr = -dx * s + dy * c;
++
++  final dFdxr = 2.0 * xr / (a * a);
++  final dFdyr = 2.0 * yr / (b * b);
++
++  final dFdx = dFdxr * c - dFdyr * s;
++  final dFdy = dFdxr * s + dFdyr * c;
++
++  if (dFdy.abs() < 1e-12) return 1e12;
++  return -dFdx / dFdy;
++}
++
++/// Angle between two slopes (m1,m2) in degrees in [0,180]
++double contactAngleDegFromSlopes(double mT, double mB) {
++  double a1 = atan(mT.isFinite ? mT : (mT > 0 ? 1e12 : -1e12));
++  double a2 = atan(mB.isFinite ? mB : (mB > 0 ? 1e12 : -1e12));
++  double diff = (a1 - a2).abs();
++  if (diff > pi) diff = 2 * pi - diff;
++  return diff * 180.0 / pi;
++}
++
++/// Bilinear sample helper: samples a grayscale intensity at subpixel (x,y).
++double _bilinearSampleGray(Uint8List pixels, int width, int height, double x, double y) {
++  if (x < 0 || x >= width - 1 || y < 0 || y >= height - 1) {
++    final xi = x.clamp(0.0, width - 1.0);
++    final yi = y.clamp(0.0, height - 1.0);
++    final idx = (yi.toInt() * width + xi.toInt()) * 4;
++    final r = pixels[idx];
++    final g = pixels[idx + 1];
++    final b = pixels[idx + 2];
++    return 0.299 * r + 0.587 * g + 0.114 * b;
++  }
++  final x0 = x.floor();
++  final y0 = y.floor();
++  final x1 = x0 + 1;
++  final y1 = y0 + 1;
++  final dx = x - x0;
++  final dy = y - y0;
++
++  final idx00 = (y0 * width + x0) * 4;
++  final idx10 = (y0 * width + x1) * 4;
++  final idx01 = (y1 * width + x0) * 4;
++  final idx11 = (y1 * width + x1) * 4;
++
++  final r00 = pixels[idx00 + 0];
++  final g00 = pixels[idx00 + 1];
++  final b00 = pixels[idx00 + 2];
++
++  final r10 = pixels[idx10 + 0];
++  final g10 = pixels[idx10 + 1];
++  final b10 = pixels[idx10 + 2];
++
++  final r01 = pixels[idx01 + 0];
++  final g01 = pixels[idx01 + 1];
++  final b01 = pixels[idx01 + 2];
++
++  final r11 = pixels[idx11 + 0];
++  final g11 = pixels[idx11 + 1];
++  final b11 = pixels[idx11 + 2];
++
++  double r = (1 - dx) * (1 - dy) * r00 +
++      dx * (1 - dy) * r10 +
++      (1 - dx) * dy * r01 +
++      dx * dy * r11;
++  double g = (1 - dx) * (1 - dy) * g00 +
++      dx * (1 - dy) * g10 +
++      (1 - dx) * dy * g01 +
++      dx * dy * g11;
++  double b = (1 - dx) * (1 - dy) * b00 +
++      dx * (1 - dy) * b10 +
++      (1 - dx) * dy * b01 +
++      dx * dy * b11;
++
++  return 0.299 * r + 0.587 * g + 0.114 * b;
++}
++
++/// Subpixel refinement: samples grayscale along the normal vector centered at approxPoint.
++Future<Offset> subpixelRefineContact({
++  required ui.Image img,
++  required Offset approxPoint,
++  required Offset normal,
++  int samples = 21,
++  double spacing = 1.0,
++}) async {
++  assert(samples % 2 == 1);
++  final ByteData? bd = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
++  if (bd == null) return approxPoint;
++  final Uint8List pixels = bd.buffer.asUint8List();
++  final int width = img.width;
++  final int height = img.height;
++
++  final int mid = samples ~/ 2;
++  final List<double> intens = List<double>.filled(samples, 0.0);
++
++  for (int i = 0; i < samples; i++) {
++    final t = (i - mid) * spacing;
++    final sx = approxPoint.dx + normal.dx * t;
++    final sy = approxPoint.dy + normal.dy * t;
++    intens[i] = _bilinearSampleGray(pixels, width, height, sx, sy);
++  }
++
++  final List<double> grad = List<double>.filled(samples, 0.0);
++  for (int i = 1; i < samples - 1; i++) {
++    grad[i] = (intens[i + 1] - intens[i - 1]) / 2.0;
++  }
++
++  int imax = 1;
++  double best = grad[1].abs();
++  for (int i = 2; i < samples - 1; i++) {
++    final d = grad[i].abs();
++    if (d > best) {
++      best = d;
++      imax = i;
++    }
++  }
++
++  if (imax <= 0 || imax >= samples - 1) return approxPoint;
++
++  final double y1 = grad[imax - 1];
++  final double y2 = grad[imax];
++  final double y3 = grad[imax + 1];
++  final double denom = 2.0 * (y1 - 2.0 * y2 + y3);
++  double dt = 0.0;
++  if (denom.abs() > 1e-8) {
++    dt = (y1 - y3) / denom;
++    dt = dt.clamp(-1.0, 1.0);
++  }
++
++  final double tPeak = (imax - mid) * spacing + dt * spacing;
++  final Offset refined = approxPoint + Offset(normal.dx * tPeak, normal.dy * tPeak);
++  return refined;
++}
++
+*** End Patch
+*** Begin Patch
+*** Add File: lib/widgets/image_annotator.dart
++// lib/widgets/image_annotator.dart
++import 'dart:convert';
++import 'dart:io';
++import 'dart:typed_data';
++import 'dart:ui' as ui;
++import 'dart:math';
++import 'package:flutter/material.dart';
++import 'package:flutter/rendering.dart';
++import 'package:http/http.dart' as http;
++import 'package:path_provider/path_provider.dart';
++import 'package:share_plus/share_plus.dart';
++import '../processing/angle_utils.dart';
++
++class ImageAnnotatorScreen extends StatefulWidget {
++  const ImageAnnotatorScreen({super.key});
++
++  @override
++  State<ImageAnnotatorScreen> createState() => _ImageAnnotatorScreenState();
++}
++
++class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
++  final GlobalKey _repaintKey = GlobalKey();
++  bool _showOverlay = true;
++  ui.Image? _image;
++  List<Offset> _contour = [];
++  Offset? _left;
++  Offset? _right;
++  Offset? _baselineA;
++  Offset? _baselineB;
++
++  double? _cx, _cy, _a, _b, _phi;
++  double _confidence = 0.0;
++
++  @override
++  void initState() {
++    super.initState();
++    WidgetsBinding.instance.addPostFrameCallback((_) => _initMock());
++  }
++
++  void _initMock() {
++    final RenderBox box = context.findRenderObject() as RenderBox;
++    final Size s = box.size;
++    final center = Offset(s.width / 2, s.height / 2);
++    _contour = List.generate(160, (i) {
++      final t = i / 160.0 * 2 * pi;
++      final rx = 130.0 + 6.0 * (i % 5);
++      final ry = 90.0 + 4.0 * ((i + 3) % 7);
++      return center + Offset(rx * cos(t), ry * sin(t));
++    });
++    _left = center + const Offset(-110, 40);
++    _right = center + const Offset(110, 40);
++    _baselineA = center + const Offset(-160, 140);
++    _baselineB = center + const Offset(160, 140);
++    setState(() {});
++  }
++
++  Future<void> _exportPng() async {
++    try {
++      final boundary =
++          _repaintKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
++      if (boundary == null) return;
++      final ui.Image image = await boundary.toImage(pixelRatio: 3.0);
++      final ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.png);
++      final Uint8List pngBytes = byteData!.buffer.asUint8List();
++
++      final dir = await getTemporaryDirectory();
++      final file = File('${dir.path}/contact_angle_${DateTime.now().millisecondsSinceEpoch}.png');
++      await file.writeAsBytes(pngBytes);
++
++      await Share.shareXFiles([XFile(file.path)], text: 'Contact Angle export');
++    } catch (e) {
++      debugPrint('Export PNG error: $e');
++    }
++  }
++
++  Future<void> _exportJsonCsv() async {
++    if (_left == null || _right == null || _baselineA == null || _baselineB == null) return;
++    final Map<String, dynamic> payload = {
++      'contact_point_left': {'x': _left!.dx, 'y': _left!.dy},
++      'contact_point_right': {'x': _right!.dx, 'y': _right!.dy},
++      'baseline_a': {'x': _baselineA!.dx, 'y': _baselineA!.dy},
++      'baseline_b': {'x': _baselineB!.dx, 'y': _baselineB!.dy},
++      'measured_angle_deg': _computeAngleLocal().toStringAsFixed(3),
++      'timestamp': DateTime.now().toIso8601String(),
++      'confidence': _confidence,
++    };
++
++    final dir = await getTemporaryDirectory();
++    final jsonFile = File('${dir.path}/contact_angle_${DateTime.now().millisecondsSinceEpoch}.json');
++    await jsonFile.writeAsString(const JsonEncoder.withIndent('  ').convert(payload));
++
++    final csvFile = File('${dir.path}/contact_angle_${DateTime.now().millisecondsSinceEpoch}.csv');
++    final csv = StringBuffer()
++      ..writeln('label,x,y')
++      ..writeln('contact_point_left,${_left!.dx},${_left!.dy}')
++      ..writeln('contact_point_right,${_right!.dx},${_right!.dy}')
++      ..writeln('baseline_a,${_baselineA!.dx},${_baselineA!.dy}')
++      ..writeln('baseline_b,${_baselineB!.dx},${_baselineB!.dy}')
++      ..writeln('measured_angle_deg,${_computeAngleLocal().toStringAsFixed(3)},');
++    await csvFile.writeAsString(csv.toString());
++
++    await Share.shareXFiles([XFile(jsonFile.path), XFile(csvFile.path)], text: 'Contact angle data');
++  }
++
++  Future<double> _computeAngleLocalAsync({bool doSubpixel = true}) async {
++    if (_left == null || _right == null || _baselineA == null || _baselineB == null) return 0.0;
++    final baselineSlope = (_baselineB!.dy - _baselineA!.dy) / (_baselineB!.dx - _baselineA!.dx + 1e-12);
++    if (_cx != null && _cy != null && _a != null && _b != null && _phi != null) {
++      double lx = _left!.dx;
++      double ly = _left!.dy;
++      if (doSubpixel && _image != null) {
++        final mt = ellipseTangentSlope(x0: lx, y0: ly, h: _cx!, k: _cy!, a: _a!, b: _b!, phi: _phi!);
++        final tvec = mt.isFinite ? Offset(1, mt) : const Offset(0, -1);
++        final tnorm = tvec / tvec.distance;
++        final normal = Offset(-tnorm.dy, tnorm.dx);
++        final refined = await subpixelRefineContact(img: _image!, approxPoint: Offset(lx, ly), normal: normal, samples: 31, spacing: 0.7);
++        lx = refined.dx;
++        ly = refined.dy;
++      }
++      final mtFinal = ellipseTangentSlope(x0: lx, y0: ly, h: _cx!, k: _cy!, a: _a!, b: _b!, phi: _phi!);
++      final deg = contactAngleDegFromSlopes(mtFinal, baselineSlope);
++      return deg;
++    } else {
++      return _computeAngleLocal();
++    }
++  }
++
++  double _computeAngleLocal() {
++    if (_left == null || _baselineA == null || _baselineB == null || _contour.isEmpty) return 0.0;
++    Offset tangentAt(Offset p) {
++      int idx = 0;
++      double best = double.infinity;
++      for (int i = 0; i < _contour.length; i++) {
++        final d = (_contour[i] - p).distanceSquared;
++        if (d < best) {
++          best = d;
++          idx = i;
++        }
++      }
++      final prev = _contour[(idx - 6 + _contour.length) % _contour.length];
++      final next = _contour[(idx + 6) % _contour.length];
++      return next - prev;
++    }
++
++    final v1 = tangentAt(_left!);
++    final baselineVec = _baselineB! - _baselineA!;
++    double a = v1.direction;
++    double b = baselineVec.direction;
++    double diff = (a - b).abs();
++    if (diff > pi) diff = 2 * pi - diff;
++    return diff * 180 / pi;
++  }
++
++  Future<void> _callBackendAnalyze(File imageFile, String backendUrl) async {
++    try {
++      final uri = Uri.parse('$backendUrl/analyze');
++      final request = http.MultipartRequest('POST', uri);
++      final bytes = await imageFile.readAsBytes();
++      request.files.add(http.MultipartFile.fromBytes('file', bytes, filename: 'img.png'));
++      final streamed = await request.send();
++      final resp = await http.Response.fromStream(streamed);
++      if (resp.statusCode != 200) {
++        debugPrint('Backend error: ${resp.statusCode} ${resp.body}');
++        return;
++      }
++      final Map<String, dynamic> j = jsonDecode(resp.body);
++      setState(() {
++        _left = Offset(j['left_contact']['x'].toDouble(), j['left_contact']['y'].toDouble());
++        _right = Offset(j['right_contact']['x'].toDouble(), j['right_contact']['y'].toDouble());
++        _cx = j['ellipse']['cx'].toDouble();
++        _cy = j['ellipse']['cy'].toDouble();
++        _a = j['ellipse']['a'].toDouble();
++        _b = j['ellipse']['b'].toDouble();
++        _phi = (j['ellipse']['angle_deg'] as num).toDouble() * pi / 180.0;
++        _confidence = (j['confidence'] as num).toDouble();
++        final overlayB64 = j['overlay_png_b64'] as String;
++        final bytesImg = base64Decode(overlayB64);
++        decodeImageFromList(bytesImg).then((ui.Image img) {
++          setState(() {
++            _image = img;
++          });
++        });
++      });
++    } catch (e) {
++      debugPrint('Error calling backend: $e');
++    }
++  }
++
++  String? _dragging;
++
++  @override
++  Widget build(BuildContext context) {
++    return Scaffold(
++      appBar: AppBar(
++        title: const Text('Contact Angle — Improved'),
++        backgroundColor: Colors.black,
++        elevation: 0,
++        actions: [
++          IconButton(
++            icon: Icon(_showOverlay ? Icons.visibility : Icons.visibility_off),
++            onPressed: () => setState(() => _showOverlay = !_showOverlay),
++          ),
++          IconButton(
++            icon: const Icon(Icons.save_alt),
++            onPressed: _exportPng,
++          ),
++          PopupMenuButton<String>(
++            onSelected: (s) {
++              if (s == 'export_data') _exportJsonCsv();
++            },
++            itemBuilder: (_) => [
++              const PopupMenuItem(value: 'export_data', child: Text('Export JSON/CSV')),
++            ],
++          ),
++        ],
++      ),
++      body: GestureDetector(
++        onPanStart: (details) {
++          final p = details.localPosition;
++          double best = double.infinity;
++          String? bestId;
++          void check(Offset? h, String id) {
++            if (h == null) return;
++            final d = (h - p).distance;
++            if (d < best && d < 28) {
++              best = d;
++              bestId = id;
++            }
++          }
++
++          check(_left, 'left');
++          check(_right, 'right');
++          check(_baselineA, 'ba');
++          check(_baselineB, 'bb');
++          _dragging = bestId;
++        },
++        onPanUpdate: (details) {
++          final p = details.localPosition;
++          setState(() {
++            if (_dragging == 'left') _left = p;
++            if (_dragging == 'right') _right = p;
++            if (_dragging == 'ba') _baselineA = p;
++            if (_dragging == 'bb') _baselineB = p;
++          });
++        },
++        onPanEnd: (_) => _dragging = null,
++        child: RepaintBoundary(
++          key: _repaintKey,
++          child: CustomPaint(
++            size: Size.infinite,
++            painter: _AnnotatorPainter(
++              contour: _contour,
++              left: _left,
++              right: _right,
++              baselineA: _baselineA,
++              baselineB: _baselineB,
++              showOverlay: _showOverlay,
++              image: _image,
++            ),
++            child: Container(color: Colors.black),
++          ),
++        ),
++      ),
++      bottomNavigationBar: SizedBox(
++        height: 76,
++        child: Container(
++          color: Colors.black,
++          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
++          child: Row(
++            children: [
++              const Text('Angle:', style: TextStyle(color: Colors.white)),
++              const SizedBox(width: 8),
++              FutureBuilder<double>(
++                future: _computeAngleLocalAsync(doSubpixel: true),
++                builder: (context, snap) {
++                  final text = snap.hasData ? '${snap.data!.toStringAsFixed(2)}°' : '--';
++                  return Chip(label: Text(text, style: const TextStyle(color: Colors.black)), backgroundColor: Colors.tealAccent);
++                },
++              ),
++              const SizedBox(width: 12),
++              ElevatedButton.icon(
++                icon: const Icon(Icons.cloud_upload),
++                label: const Text('Analyze (Backend)'),
++                onPressed: () async {
++                  try {
++                    final boundary = _repaintKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
++                    if (boundary == null) return;
++                    final ui.Image img = await boundary.toImage(pixelRatio: 1.0);
++                    final ByteData? bd = await img.toByteData(format: ui.ImageByteFormat.png);
++                    final Uint8List bytes = bd!.buffer.asUint8List();
++                    final dir = await getTemporaryDirectory();
++                    final f = File('${dir.path}/tmp_export.png');
++                    await f.writeAsBytes(bytes);
++                    const backend = 'http://10.0.2.2:8000';
++                    await _callBackendAnalyze(f, backend);
++                  } catch (e) {
++                    debugPrint('Analyze error: $e');
++                  }
++                },
++                style: ElevatedButton.styleFrom(backgroundColor: Colors.cyan),
++              ),
++              const Spacer(),
++              ElevatedButton.icon(icon: const Icon(Icons.save), label: const Text('Export PNG'), onPressed: _exportPng, style: ElevatedButton.styleFrom(backgroundColor: Colors.cyan)),
++            ],
++          ),
++        ),
++      ),
++    );
++  }
++}
++
++class _AnnotatorPainter extends CustomPainter {
++  final List<Offset> contour;
++  final Offset? left;
++  final Offset? right;
++  final Offset? baselineA;
++  final Offset? baselineB;
++  final bool showOverlay;
++  final ui.Image? image;
++
++  _AnnotatorPainter({required this.contour, this.left, this.right, this.baselineA, this.baselineB, required this.showOverlay, this.image});
++
++  @override
++  void paint(Canvas canvas, Size size) {
++    if (image != null) {
++      final paint = Paint();
++      final src = Rect.fromLTWH(0,0,image!.width.toDouble(), image!.height.toDouble());
++      final dst = Rect.fromLTWH(0,0,size.width, size.height);
++      canvas.drawImageRect(image!, src, dst, paint);
++    } else {
++      canvas.drawRect(Offset.zero & size, Paint()..color = Colors.black);
++    }
++
++    if (!showOverlay) return;
++
++    if (contour.isNotEmpty) {
++      final Paint contourPaint = Paint()..color = Colors.greenAccent..style = PaintingStyle.stroke..strokeWidth = 2.0;
++      final Path p = Path()..moveTo(contour[0].dx, contour[0].dy);
++      for (final pt in contour.skip(1)) {
++        p.lineTo(pt.dx, pt.dy);
++      }
++      p.close();
++      canvas.drawPath(p, contourPaint);
++    }
++
++    if (baselineA != null && baselineB != null) {
++      final Paint basePaint = Paint()..color = Colors.cyanAccent..strokeWidth = 2.0;
++      canvas.drawLine(baselineA!, baselineB!, basePaint);
++    }
++
++    if (left != null) canvas.drawCircle(left!, 8, Paint()..color = Colors.redAccent);
++    if (right != null) canvas.drawCircle(right!, 8, Paint()..color = Colors.redAccent);
++    if (baselineA != null) canvas.drawCircle(baselineA!, 6, Paint()..color = Colors.blueAccent);
++    if (baselineB != null) canvas.drawCircle(baselineB!, 6, Paint()..color = Colors.blueAccent);
++  }
++
++  @override
++  bool shouldRepaint(covariant _AnnotatorPainter oldDelegate) {
++    return oldDelegate.contour != contour || oldDelegate.left != left || oldDelegate.right != right || oldDelegate.baselineA != baselineA || oldDelegate.baselineB != baselineB || oldDelegate.showOverlay != showOverlay || oldDelegate.image != image;
++  }
++}
+diff --git a/lib/main.dart b/lib/main.dart
+index 1234567..abcdefg 100644
+--- a/lib/main.dart
++++ b/lib/main.dart
+@@ -1,33 +1,33 @@
+ import 'package:flutter/material.dart';
+ import 'widgets/image_annotator.dart';
+ 
+-void main() async {
+-  WidgetsFlutterBinding.ensureInitialized();
+-  runApp(const SlpContactAngleApp());
+-}
+-
+ class SlpContactAngleApp extends StatelessWidget {
+   const SlpContactAngleApp({super.key});
+ 
+   @override
+   Widget build(BuildContext context) {
+-    final ThemeData dark = ThemeData.dark();
+-    return MaterialApp(
+-      title: 'SLP Contact Angle',
+-      theme: dark.copyWith(
+-        scaffoldBackgroundColor: Colors.black, // pure black background
+-        colorScheme: dark.colorScheme.copyWith(
+-          primary: Colors.tealAccent,
+-          secondary: Colors.cyanAccent,
+-        ),
+-        appBarTheme: const AppBarTheme(
+-          backgroundColor: Colors.black,
+-          elevation: 0,
+-          foregroundColor: Colors.white,
+-        ),
+-      ),
+-      home: const ImageAnnotatorScreen(),
+-      debugShowCheckedModeBanner: false,
+-    );
++    final ThemeData dark = ThemeData.dark();
++    return MaterialApp(
++      title: 'SLP Contact Angle',
++      theme: dark.copyWith(
++        scaffoldBackgroundColor: Colors.black,
++        colorScheme: dark.colorScheme.copyWith(
++          primary: Colors.tealAccent,
++          secondary: Colors.cyanAccent,
++        ),
++        appBarTheme: const AppBarTheme(
++          backgroundColor: Colors.black,
++          elevation: 0,
++          foregroundColor: Colors.white,
++        ),
++      ),
++      home: const ImageAnnotatorScreen(),
++      debugShowCheckedModeBanner: false,
++    );
+   }
+ }
++
++void main() {
++  runApp(const SlpContactAngleApp());
++}
+---PATCH-END---
