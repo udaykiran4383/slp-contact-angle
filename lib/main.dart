@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'widgets/image_annotator.dart';
+import 'widgets/image_annotator_improved.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -13,7 +13,7 @@ class SlpContactAngleApp extends StatelessWidget {
   Widget build(BuildContext context) {
     final ThemeData dark = ThemeData.dark();
     return MaterialApp(
-      title: 'SLP Contact Angle',
+      title: 'Contact Angle Measurement',
       theme: dark.copyWith(
         scaffoldBackgroundColor: Colors.black, // pure black background
         colorScheme: dark.colorScheme.copyWith(
