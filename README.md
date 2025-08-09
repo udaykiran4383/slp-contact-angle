@@ -11,9 +11,10 @@ A professional Flutter application for measuring water droplet contact angles us
 - **Robust Algorithm** - Works with challenging images and lighting conditions
 
 ### 🔬 **Advanced Computer Vision Pipeline**
-- **RANSAC Baseline Fitting** - Robust to outliers, reflections, and noise
-- **Local Polynomial Tangent Fitting** - Smooth, mathematically precise slope calculation
-- **Subpixel Edge Refinement** - Fractional pixel accuracy using gradient analysis
+- **Non-Max Suppressed Edges** - Clean edge map from Sobel + NMS + hysteresis
+- **Tri-baseline Voting** - RANSAC, Hough→RANSAC, and Mask-bottom with confidence scoring
+- **Inner-arc Tangents** - Pratt circle fit with Theil–Sen/PCA fallbacks on droplet-only arc
+- **Subpixel Contact Refinement** - Fractional pixel accuracy using gradient analysis
 - **Multi-scale Processing** - Fast processing with full-resolution precision
 - **CLAHE Enhancement** - Adaptive local contrast improvement
 
@@ -47,11 +48,11 @@ A professional Flutter application for measuring water droplet contact angles us
 ## 🎨 Professional Interface
 
 ### **Automatic Visualization**
-- **🟢 Green Baseline** - Automatically detected surface line  
+- **🟢 Green Baseline** - Auto-selected best baseline (voted)  
 - **⚪ White Contour** - Precisely extracted droplet boundary
 - **🟠 Orange Contact Points** - Subpixel-accurate contact locations
 - **🔴 Red Tangent Lines** - Contact angle measurement vectors
-- **📊 Real-time Results** - Left, right, and average angles displayed
+- **📊 Real-time Results** - Left, Right, Avg, and Best (auto-confidence side)
 
 ### **Debug Mode**
 - **Toggle Debug Info** - Technical details for analysis verification
@@ -61,8 +62,9 @@ A professional Flutter application for measuring water droplet contact angles us
 ## 🔧 Advanced Technical Implementation
 
 ### **Robust Geometry Algorithms**
-- **RANSAC Line Fitting** - Resistant to outliers and noise points
-- **Local Quadratic Fitting** - Mathematically smooth tangent calculation
+- **RANSAC + Hough Baselines** - Confidence-voted, slope-prior refined
+- **Pratt Circle Fit Tangents** - Stable curvature on droplet-side inner arc
+- **Theil–Sen + PCA Fallbacks** - Robust to outliers and poor contrast
 - **Subpixel Intersection** - Precise line-segment intersection with baseline
 - **Gradient-based Refinement** - Edge detection accurate to fractions of pixels
 - **Normal Vector Calculation** - Proper surface normal computation
@@ -97,9 +99,9 @@ flutter run
 
 ### **Usage**
 1. **Launch App** - Opens ready for automatic processing
-2. **Load Image** - Tap "Load example image & Auto-process" 
+2. **Pick Image or Batch** - The pipeline auto-selects profile and runs
 3. **Instant Results** - Complete analysis appears in 1-2 seconds
-4. **Professional Output** - Contact angles: Left, Right, Average
+4. **Professional Output** - Contact angles: Left, Right, Average, Best
 
 ### **Integration Options**
 - **Camera Capture** - Direct integration with device camera
@@ -137,6 +139,7 @@ flutter run
 
 ### **Quality Assurance**
 - **Multi-level Validation** - Contour, baseline, and contact point verification
+- **Auto Profiles** - Scene-aware parameters (dark/mid/bright) with deterministic fallback
 - **Fallback Systems** - Automatic recovery from detection challenges
 - **Visual Verification** - Complete overlay visualization
 - **Statistical Robustness** - Algorithm resistant to noise and outliers

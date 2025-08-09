@@ -3,10 +3,15 @@
 // Minimal user interaction: a "Process" button or auto-run on example load.
 
 import 'dart:ui' as ui;
+import 'dart:io' as io;
+import 'dart:typed_data';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import '../image_processor.dart';
 import '../processing/angle_utils.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 class ImageAnnotatorScreen extends StatefulWidget {
   const ImageAnnotatorScreen({super.key});
@@ -14,16 +19,25 @@ class ImageAnnotatorScreen extends StatefulWidget {
   State<ImageAnnotatorScreen> createState() => _ImageAnnotatorScreenState();
 }
 
-class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
+class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> with SingleTickerProviderStateMixin {
   ui.Image? _image;
   ProcessedImageData? _processed;
   bool _loading = false;
   bool _debug = false;
+  final ImagePicker _picker = ImagePicker();
+  late final AnimationController _logoController;
 
   @override
   void initState() {
     super.initState();
     // Optionally auto-load an example asset here if you have one.
+    _logoController = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat();
+  }
+
+  @override
+  void dispose() {
+    _logoController.dispose();
+    super.dispose();
   }
 
   Future<void> _processImage(ui.Image img) async {
@@ -40,8 +54,25 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Automatic Contact Angle'),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SvgPicture.asset(
+              'assets/contact_angle_icon.svg',
+              width: 22,
+              height: 22,
+            ),
+            const SizedBox(width: 8),
+            const Text('Automatic Contact Angle'),
+          ],
+        ),
         actions: [
+          if (_image != null && _processed != null)
+            IconButton(
+              icon: const Icon(Icons.save_alt),
+              tooltip: 'Save annotated PNG',
+              onPressed: _saveAnnotated,
+            ),
           IconButton(
             icon: Icon(_debug ? Icons.bug_report : Icons.bug_report_outlined),
             onPressed: () => setState(() => _debug = !_debug),
@@ -51,11 +82,31 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
       ),
       body: Center(
         child: _loading
-            ? const CircularProgressIndicator()
+            ? Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  RotationTransition(
+                    turns: _logoController,
+                    child: SvgPicture.asset(
+                      'assets/contact_angle_icon.svg',
+                      width: 96,
+                      height: 96,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text('Processing...', style: TextStyle(color: Colors.white70)),
+                ],
+              )
             : (_image == null)
                 ? Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
+                      ElevatedButton.icon(
+                        onPressed: _pickFromGallery,
+                        icon: const Icon(Icons.photo_library),
+                        label: const Text('Pick image & Auto-process'),
+                      ),
+                      const SizedBox(height: 12),
                       ElevatedButton(
                         onPressed: _loadExampleImage,
                         child: const Text('Load example image & Auto-process'),
@@ -87,7 +138,8 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
                                 child: Text(
                                   'L: ${_processed!.leftAngle.toStringAsFixed(2)}°  '
                                   'R: ${_processed!.rightAngle.toStringAsFixed(2)}°  '
-                                  'Avg: ${_processed!.avgAngle.toStringAsFixed(2)}°',
+                                  'Avg: ${_processed!.avgAngle.toStringAsFixed(2)}°  '
+                                  'Best(${_processed!.bestSide[0].toUpperCase()}): ${_processed!.bestAngle.toStringAsFixed(2)}°',
                                   style: const TextStyle(color: Colors.white),
                                 ),
                               ),
@@ -114,6 +166,61 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
       }
     }
   }
+
+  Future<void> _pickFromGallery() async {
+    try {
+      final XFile? file = await _picker.pickImage(source: ImageSource.gallery);
+      if (file == null) return;
+      final bytes = await file.readAsBytes();
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      await _processImage(frame.image);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to pick/process image: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _saveAnnotated() async {
+    if (_image == null || _processed == null) return;
+    try {
+      final pngBytes = await _renderAnnotatedPng(_image!, _processed!, _debug);
+      final dir = await getApplicationDocumentsDirectory();
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      final path = '${dir.path}/contact_angle_annotated_$ts.png';
+      final file = io.File(path);
+      await file.writeAsBytes(pngBytes);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Saved: $path')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Save failed: $e')),
+        );
+      }
+    }
+  }
+
+  Future<Uint8List> _renderAnnotatedPng(ui.Image image, ProcessedImageData processed, bool showDebug) async {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    final size = Size(image.width.toDouble(), image.height.toDouble());
+    // draw background image
+    canvas.drawImage(image, Offset.zero, Paint());
+    // draw overlay via painter
+    final painter = _OverlayPainter(processed: processed, showDebug: showDebug);
+    painter.paint(canvas, size);
+    final picture = recorder.endRecording();
+    final img = await picture.toImage(image.width, image.height);
+    final data = await img.toByteData(format: ui.ImageByteFormat.png);
+    return data!.buffer.asUint8List();
+  }
 }
 
 class _OverlayPainter extends CustomPainter {
@@ -127,6 +234,8 @@ class _OverlayPainter extends CustomPainter {
     final contourPaint = Paint()..color = Colors.white24..style = PaintingStyle.stroke..strokeWidth = 1.2;
     final ptPaint = Paint()..color = Colors.orange..style = PaintingStyle.fill;
     final tanPaint = Paint()..color = Colors.redAccent..strokeWidth = 2.0;
+    final dbgPaint = Paint()..color = Colors.cyanAccent.withOpacity(0.9)..strokeWidth = 2.0;
+    final dbgDim = Paint()..color = Colors.cyanAccent.withOpacity(0.45)..strokeWidth = 1.5;
 
     // draw baseline
     canvas.drawLine(processed.baseline.startPoint, processed.baseline.endPoint, baselinePaint);
@@ -170,6 +279,43 @@ class _OverlayPainter extends CustomPainter {
       textDirection: TextDirection.ltr,
     )..layout();
     tp2.paint(canvas, processed.rightContact + const Offset(8, -20));
+
+    if (showDebug && processed.debug != null) {
+      final dbg = processed.debug!;
+      // Baseline candidate points (scaled to original were provided)
+      if (dbg['baseline_points'] is List) {
+        for (final p in (dbg['baseline_points'] as List)) {
+          if (p is Offset) {
+            canvas.drawCircle(p, 2.0, dbgDim);
+          }
+        }
+      }
+      // Approx contacts
+      if (dbg['approx_contacts'] is List) {
+        for (final p in (dbg['approx_contacts'] as List)) {
+          if (p is Offset) {
+            canvas.drawCircle(p, 4.0, dbgPaint);
+          }
+        }
+      }
+      // Neighborhoods
+      void drawNeighborhood(List<Offset> pts, Color color) {
+        final paint = Paint()
+          ..color = color.withOpacity(0.8)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5;
+        for (int i = 0; i < pts.length; i++) {
+          final p = pts[i];
+          canvas.drawCircle(p, 1.5, paint);
+        }
+      }
+      if (dbg['left_neighborhood'] is List) {
+        drawNeighborhood((dbg['left_neighborhood'] as List).whereType<Offset>().toList(), Colors.limeAccent);
+      }
+      if (dbg['right_neighborhood'] is List) {
+        drawNeighborhood((dbg['right_neighborhood'] as List).whereType<Offset>().toList(), Colors.amberAccent);
+      }
+    }
   }
 
   static List<Offset> _collectNeighborsForPaint(List<Offset> contour, Offset pt, {int k = 8}) {
