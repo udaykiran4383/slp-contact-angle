@@ -71,7 +71,7 @@ class ImageProcessor {
 
   static List<int> _gaussianBlur(List<int> image, int width, int height) {
     // Simple 3x3 Gaussian kernel
-    final kernel = [1, 2, 1, 2, 4, 2, 1, 2, 1];
+    const kernel = [1, 2, 1, 2, 4, 2, 1, 2, 1];
     final kernelSum = 16;
     final result = List<int>.filled(width * height, 0);
     
@@ -187,7 +187,8 @@ class ImageProcessor {
     if (boundary.isEmpty) return boundary;
     
     // Find the topmost point as starting point
-    Offset startPoint = boundary.reduce((a, b) => a.dy < b.dy ? a : b);
+    // Find the topmost point for reference
+    boundary.reduce((a, b) => a.dy < b.dy ? a : b);
     
     // Sort points by angle from center
     final center = boundary.fold(Offset.zero, (sum, point) => sum + point) / boundary.length.toDouble();

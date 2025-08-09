@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'dart:math';
 import 'package:flutter/material.dart';
@@ -22,7 +21,6 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
   final GlobalKey _repaintKey = GlobalKey();
   bool _showOverlay = true;
   ui.Image? _image;
-  File? _imageFile;
   List<Offset> _contour = [];
   Offset? _leftContact;
   Offset? _rightContact;
@@ -102,7 +100,6 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
   Future<void> _loadImage(File imageFile) async {
     setState(() {
       _isProcessing = true;
-      _imageFile = imageFile;
       _processingStatus = 'Loading image...';
     });
 
