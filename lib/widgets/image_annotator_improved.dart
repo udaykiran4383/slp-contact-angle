@@ -23,7 +23,7 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> with Single
   ui.Image? _image;
   ProcessedImageData? _processed;
   bool _loading = false;
-  bool _debug = false;
+  bool _debug = false; // keep flag but default to no debug noise
   final ImagePicker _picker = ImagePicker();
   late final AnimationController _logoController;
 
@@ -73,11 +73,6 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> with Single
               tooltip: 'Save annotated PNG',
               onPressed: _saveAnnotated,
             ),
-          IconButton(
-            icon: Icon(_debug ? Icons.bug_report : Icons.bug_report_outlined),
-            onPressed: () => setState(() => _debug = !_debug),
-            tooltip: 'Toggle debug info',
-          ),
         ],
       ),
       body: Center(
@@ -232,15 +227,63 @@ class _OverlayPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final baselinePaint = Paint()..color = Colors.greenAccent..strokeWidth = 2.5;
     final contourPaint = Paint()..color = Colors.white24..style = PaintingStyle.stroke..strokeWidth = 1.2;
+    final sphericalPaint = Paint()..color = Colors.white..style = PaintingStyle.stroke..strokeWidth = 1.6;
     final ptPaint = Paint()..color = Colors.orange..style = PaintingStyle.fill;
     final tanPaint = Paint()..color = Colors.redAccent..strokeWidth = 2.0;
-    final dbgPaint = Paint()..color = Colors.cyanAccent.withOpacity(0.9)..strokeWidth = 2.0;
-    final dbgDim = Paint()..color = Colors.cyanAccent.withOpacity(0.45)..strokeWidth = 1.5;
+    final dbgPaint = Paint()..color = Colors.cyanAccent.withValues(alpha: 0.9)..strokeWidth = 2.0;
+    final dbgDim = Paint()..color = Colors.cyanAccent.withValues(alpha: 0.45)..strokeWidth = 1.5;
 
-    // draw baseline
-    canvas.drawLine(processed.baseline.startPoint, processed.baseline.endPoint, baselinePaint);
+    // draw baseline with method-specific color
+    final method = processed.debug?['baseline_method'] ?? 'unknown';
+    switch (method) {
+      case 'contact_points':
+        baselinePaint.color = Colors.cyan; // Bright cyan for contact points method
+        break;
+      case 'mask_floor':
+        baselinePaint.color = Colors.greenAccent;
+        break;
+      case 'contour_bottom':
+        baselinePaint.color = Colors.blueAccent;
+        break;
+      case 'gradient_band':
+        baselinePaint.color = Colors.purpleAccent;
+        break;
+      case 'global_stable':
+        baselinePaint.color = Colors.orangeAccent;
+        break;
+      case 'intensity_profile_enhanced':
+        baselinePaint.color = Colors.redAccent;
+        break;
+      case 'simple_fallback':
+        baselinePaint.color = Colors.yellow; // Yellow for simple fallback
+        break;
+      default:
+        baselinePaint.color = Colors.greenAccent;
+    }
+    
+    // Draw baseline as dashed polyline across the frame
+    final poly = processed.debug?['baseline_polyline'] as List<Offset>?;
+    if (poly != null && poly.isNotEmpty) {
+      final path = Path()..moveTo(poly.first.dx, poly.first.dy);
+      for (int i = 1; i < poly.length; i++) path.lineTo(poly[i].dx, poly[i].dy);
+      _drawDashedPath(canvas, path, baselinePaint, dashLength: 10, gapLength: 6);
+    } else {
+      canvas.drawLine(processed.baseline.startPoint, processed.baseline.endPoint, baselinePaint);
+    }
 
-    // contour path
+    // Fill region above baseline lightly to mimic reference
+    if (poly != null && poly.length >= 2) {
+      final fillPath = Path();
+      fillPath.moveTo(poly.first.dx, poly.first.dy);
+      for (int i = 1; i < poly.length; i++) fillPath.lineTo(poly[i].dx, poly[i].dy);
+      fillPath.lineTo(poly.last.dx, 0);
+      fillPath.lineTo(poly.first.dx, 0);
+      fillPath.close();
+      final fillPaint = Paint()..color = Colors.redAccent.withValues(alpha: 0.18)..style = PaintingStyle.fill;
+      canvas.drawPath(fillPath, fillPaint);
+    }
+
+    // Draw only the clean droplet contour; remove noisy dashed overlays
     final c = processed.boundary;
     if (c.isNotEmpty) {
       final path = Path()..moveTo(c.first.dx, c.first.dy);
@@ -249,15 +292,24 @@ class _OverlayPainter extends CustomPainter {
       canvas.drawPath(path, contourPaint);
     }
 
+    // If available, draw spherical arc approximation as a dashed curve to emphasize circular boundary
+    final enhanced = processed.enhancedBoundary;
+    final arc = enhanced?['sphericalArc'] as List<Offset>?;
+    if (arc != null && arc.length >= 2) {
+      final arcPath = Path()..moveTo(arc.first.dx, arc.first.dy);
+      for (int i = 1; i < arc.length; i++) arcPath.lineTo(arc[i].dx, arc[i].dy);
+      _drawDashedPath(canvas, arcPath, sphericalPaint, dashLength: 8, gapLength: 5);
+    }
+
     // contact points
     canvas.drawCircle(processed.leftContact, 5.0, ptPaint);
     canvas.drawCircle(processed.rightContact, 5.0, ptPaint);
 
     // tangents: compute small segment around each point using local derivative approach
     final leftSlope = AngleUtils.localQuadraticDerivative(
-        _collectNeighborsForPaint(c, processed.leftContact, k: 12), processed.leftContact.dx);
+        _collectNeighborsForPaint(processed.boundary, processed.leftContact, k: 12), processed.leftContact.dx);
     final rightSlope = AngleUtils.localQuadraticDerivative(
-        _collectNeighborsForPaint(c, processed.rightContact, k: 12), processed.rightContact.dx);
+        _collectNeighborsForPaint(processed.boundary, processed.rightContact, k: 12), processed.rightContact.dx);
     _drawTangent(canvas, processed.leftContact, leftSlope, tanPaint);
     _drawTangent(canvas, processed.rightContact, rightSlope, tanPaint);
 
@@ -280,42 +332,7 @@ class _OverlayPainter extends CustomPainter {
     )..layout();
     tp2.paint(canvas, processed.rightContact + const Offset(8, -20));
 
-    if (showDebug && processed.debug != null) {
-      final dbg = processed.debug!;
-      // Baseline candidate points (scaled to original were provided)
-      if (dbg['baseline_points'] is List) {
-        for (final p in (dbg['baseline_points'] as List)) {
-          if (p is Offset) {
-            canvas.drawCircle(p, 2.0, dbgDim);
-          }
-        }
-      }
-      // Approx contacts
-      if (dbg['approx_contacts'] is List) {
-        for (final p in (dbg['approx_contacts'] as List)) {
-          if (p is Offset) {
-            canvas.drawCircle(p, 4.0, dbgPaint);
-          }
-        }
-      }
-      // Neighborhoods
-      void drawNeighborhood(List<Offset> pts, Color color) {
-        final paint = Paint()
-          ..color = color.withOpacity(0.8)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.5;
-        for (int i = 0; i < pts.length; i++) {
-          final p = pts[i];
-          canvas.drawCircle(p, 1.5, paint);
-        }
-      }
-      if (dbg['left_neighborhood'] is List) {
-        drawNeighborhood((dbg['left_neighborhood'] as List).whereType<Offset>().toList(), Colors.limeAccent);
-      }
-      if (dbg['right_neighborhood'] is List) {
-        drawNeighborhood((dbg['right_neighborhood'] as List).whereType<Offset>().toList(), Colors.amberAccent);
-      }
-    }
+    // Suppress all debug overlays to remove visual noise
   }
 
   static List<Offset> _collectNeighborsForPaint(List<Offset> contour, Offset pt, {int k = 8}) {
@@ -343,6 +360,78 @@ class _OverlayPainter extends CustomPainter {
     final mag = sqrt(vx * vx + vy * vy);
     final v = Offset(vx / mag * len, vy / mag * len);
     c.drawLine(pt - v, pt + v, p);
+  }
+
+  // Intelligent automatic dashed path drawing with adaptive parameters
+  void _drawDashedPath(Canvas canvas, Path path, Paint paint, {double? dashLength, double? gapLength}) {
+    final pathMetrics = path.computeMetrics();
+    
+    for (final metric in pathMetrics) {
+      // Automatically calculate optimal dash and gap lengths based on path characteristics
+      final totalLength = metric.length;
+      final autoDashLength = dashLength ?? _calculateOptimalDashLength(totalLength);
+      final autoGapLength = gapLength ?? _calculateOptimalGapLength(totalLength, autoDashLength);
+      
+      // Adaptive drawing with intelligent segment handling
+      double distance = 0.0;
+      bool draw = true;
+      int segmentCount = 0;
+      
+      while (distance < metric.length) {
+        if (draw) {
+          final start = metric.getTangentForOffset(distance)?.position;
+          final end = metric.getTangentForOffset(min(distance + autoDashLength, metric.length))?.position;
+          
+          if (start != null && end != null) {
+            // Automatically adjust paint properties for better visibility
+            final adaptivePaint = _createAdaptivePaint(paint, segmentCount, totalLength);
+            canvas.drawLine(start, end, adaptivePaint);
+          }
+        }
+        
+        distance += autoDashLength + autoGapLength;
+        draw = !draw;
+        segmentCount++;
+      }
+    }
+  }
+  
+  // Automatically calculate optimal dash length based on path length
+  double _calculateOptimalDashLength(double pathLength) {
+    if (pathLength < 50) return 3.0;      // Short paths: small dashes
+    if (pathLength < 200) return 6.0;     // Medium paths: medium dashes
+    if (pathLength < 500) return 8.0;     // Long paths: larger dashes
+    return 12.0;                          // Very long paths: large dashes
+  }
+  
+  // Automatically calculate optimal gap length based on path and dash length
+  double _calculateOptimalGapLength(double pathLength, double dashLength) {
+    final ratio = dashLength / pathLength;
+    if (ratio > 0.1) return dashLength * 0.5;      // High ratio: small gaps
+    if (ratio > 0.05) return dashLength * 0.8;     // Medium ratio: medium gaps
+    return dashLength * 1.2;                        // Low ratio: larger gaps
+  }
+  
+  // Create adaptive paint with automatic adjustments
+  Paint _createAdaptivePaint(Paint originalPaint, int segmentIndex, double totalLength) {
+    final adaptivePaint = Paint()
+      ..color = originalPaint.color
+      ..style = originalPaint.style
+      ..strokeWidth = originalPaint.strokeWidth;
+    
+    // Automatically adjust stroke width for better visibility
+    if (totalLength < 100) {
+      adaptivePaint.strokeWidth = max(1.0, originalPaint.strokeWidth * 0.8);
+    } else if (totalLength > 300) {
+      adaptivePaint.strokeWidth = min(4.0, originalPaint.strokeWidth * 1.2);
+    }
+    
+    // Automatically adjust color opacity for better contrast
+    if (originalPaint.color.a < 0.7) {
+      adaptivePaint.color = originalPaint.color.withValues(alpha: min(1.0, originalPaint.color.a * 1.3));
+    }
+    
+    return adaptivePaint;
   }
 
   @override

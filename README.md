@@ -11,9 +11,8 @@ A professional Flutter application for measuring water droplet contact angles us
 - **Robust Algorithm** - Works with challenging images and lighting conditions
 
 ### 🔬 **Advanced Computer Vision Pipeline**
-- **Non-Max Suppressed Edges** - Clean edge map from Sobel + NMS + hysteresis
-- **Tri-baseline Voting** - RANSAC, Hough→RANSAC, and Mask-bottom with confidence scoring
-- **Inner-arc Tangents** - Pratt circle fit with Theil–Sen/PCA fallbacks on droplet-only arc
+- **Fused Baseline Detection (new)** - Multi-detector fusion (contact-points, mask-floor, contour-bottom, near-droplet gradient band, global-stable) with scoring for horizontalness, proximity to droplet bottom, support count, and contact hints
+- **Robust Spherical Arc (new)** - RANSAC-trimmed Pratt/Kåsa circle fit on the droplet arc above the baseline; sampled dashed arc for clean spherical boundary visualization
 - **Subpixel Contact Refinement** - Fractional pixel accuracy using gradient analysis
 - **Multi-scale Processing** - Fast processing with full-resolution precision
 - **CLAHE Enhancement** - Adaptive local contrast improvement
@@ -28,30 +27,23 @@ A professional Flutter application for measuring water droplet contact angles us
 
 ### **Ultra-Simple Process:**
 1. **📷 Load Image** → Tap "Load example image & Auto-process"
-2. **⚡ Get Results** → Left: 87.3°, Right: 89.1°, Avg: 88.2°
+2. **⚡ Get Results** → Angles are computed and overlaid automatically
 
-### **Advanced Processing Pipeline:**
+### **Processing Overview:**
 ```
-📷 Input → 📊 CLAHE → 🔍 Edge Detection → 🎯 Morphology → 📐 RANSAC → 🔬 Subpixel
+📷 Input → CLAHE → Denoise → Edges/Morphology → Largest component → Contour
+→ Fused baseline detection → Subpixel contact refinement → Local tangents
+→ Robust spherical arc fit → Angle computation + overlay
 ```
-
-1. **Smart Downscaling** - Optimizes speed while preserving precision
-2. **CLAHE Enhancement** - Adaptive local contrast for challenging images
-3. **Multi-stage Denoising** - Median blur + Gaussian blur combination
-4. **Adaptive Edge Detection** - Automatic thresholds based on image statistics
-5. **Morphological Cleanup** - Removes artifacts while preserving droplet shape
-6. **Largest Component Extraction** - Automatically isolates main droplet
-7. **RANSAC Baseline Detection** - Robust line fitting resistant to outliers
-8. **Subpixel Contact Refinement** - Gradient-based edge refinement
-9. **Local Polynomial Tangents** - Smooth slope calculation using least-squares
 
 ## 🎨 Professional Interface
 
 ### **Automatic Visualization**
-- **🟢 Green Baseline** - Auto-selected best baseline (voted)  
+- **🟢 Green Baseline** - Auto-selected best baseline (fusion)  
 - **⚪ White Contour** - Precisely extracted droplet boundary
 - **🟠 Orange Contact Points** - Subpixel-accurate contact locations
 - **🔴 Red Tangent Lines** - Contact angle measurement vectors
+- **◌ White Dashed Arc** - Fitted spherical boundary (visual aid)
 - **📊 Real-time Results** - Left, Right, Avg, and Best (auto-confidence side)
 
 ### **Debug Mode**
@@ -87,13 +79,19 @@ A professional Flutter application for measuring water droplet contact angles us
 ### **Installation**
 ```bash
 # Clone the repository
-git clone https://github.com/your-repo/contact_angle_app.git
+git clone <your-remote-url>.git
 cd contact_angle_app
 
 # Install dependencies
 flutter pub get
 
-# Run the app
+# Run analyzer (optional)
+flutter analyze
+
+# Run tests (uses images under PFOTES/)
+flutter test
+
+# Launch on a device/emulator
 flutter run
 ```
 
