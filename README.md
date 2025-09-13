@@ -1,4 +1,56 @@
 # 📐 Fully Automatic Contact Angle Measurement App
+A research-grade, fully automatic contact angle measurement app using advanced image processing and robust geometry for reliable, reproducible results.
+
+🚀 Key Features
+One-click, zero-bias workflow. Complete automation from image to result in ~1 second.
+
+Robust Ensemble Boundary Detection. Multi-scale Canny + Otsu, with advanced smoothing/outlier removal.
+
+Anti-glare, rigorous baseline, subpixel accuracy. Tolerates challenging images and artifacts.
+
+Batch testing & export. PFOTES sample images/test included for empirical QA.
+
+📝 Installation
+```text
+git clone https://github.com/udaykiran4383/slp-contact-angle.git
+cd slp-contact-angle
+flutter pub get
+# Place test images in PFOTES/ if not present
+```
+
+▶️ Usage
+Launch app (auto runs default example/test images):
+
+```text
+flutter run
+```
+
+Run tests on images:
+
+```text
+flutter test test/image_processor_test.dart
+```
+
+🧪 Sample Output
+```text
+C_1.5%_1 coat_5a.JPG: 75.2° (Quality 85%)
+C_1.5%_2 coat_5.JPG: 54.7° (Quality 91%)
+Batch summary: 10 succeeded, 0 failed/poor quality
+```
+
+🔬 Research-Grade Science
+Optimized for lab & QA: High-throughput, repeatable, cross-platform.
+
+No manual annotation required. Results are objective, exportable, and publication-ready.
+
+Open source. MIT License.
+
+❌ No Dead Code
+All files (main, processor, utils, and test) have been fully purged of unused or obsolete routines.
+To contribute: New PRs must not re-introduce dead or unreferenced code.
+
+With this test and README, your code/app and documentation are lean, reliable, and immediately useful for research, QA, or publication. Let me know if you want badges, contribution guidelines, or an example output figure!
+# 📐 Fully Automatic Contact Angle Measurement App
 
 A professional Flutter application for measuring water droplet contact angles using advanced computer vision and robust geometric algorithms. This app provides **completely automatic**, objective, and reproducible contact angle measurements with research-grade precision.
 

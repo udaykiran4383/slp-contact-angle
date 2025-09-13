@@ -1,349 +1,68 @@
+
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'dart:math';
-
 import 'package:flutter/material.dart';
 import 'package:opencv_dart/opencv_dart.dart' as cv;
 import 'package:path_provider/path_provider.dart';
 import 'processing/angle_utils.dart';
 
+// --- Data Models ---
+class ProcessedImageData {
+  final List<Offset> boundary;
+  final BaselineData baseline;
+  final Offset leftContact;
+  final Offset rightContact;
+  final double contactAngle;
+  final double qualityScore;
+
+  ProcessedImageData({
+    required this.boundary,
+    required this.baseline,
+    required this.leftContact,
+    required this.rightContact,
+    required this.contactAngle,
+    required this.qualityScore,
+  });
+}
+
+class BaselineData {
+  final Offset startPoint;
+  final Offset endPoint;
+  double get slope => (endPoint.dy - startPoint.dy) / (endPoint.dx - startPoint.dx);
+  double get intercept => startPoint.dy - slope * startPoint.dx;
+  BaselineData({required this.startPoint, required this.endPoint});
+}
+
+class ContactPointPair {
+  final Offset left;
+  final Offset right;
+  ContactPointPair({required this.left, required this.right});
+}
+
+class PreprocessedImageData {
+  final cv.Mat processedImage;
+  final Uint8List originalPixels;
+  PreprocessedImageData({required this.processedImage, required this.originalPixels});
+}
+
+class BoundaryCandidate {
+  final List<Offset> boundary;
+  final String method;
+  final double score;
+  final double confidence;
+  BoundaryCandidate({
+    required this.boundary,
+    required this.method,
+    required this.score,
+    required this.confidence,
+  });
+}
+
 class ImageProcessor {
-  /// Main processing method with state-of-the-art droplet detection
-  static Future<ProcessedImageData> processDropletImage(ui.Image image) async {
-    try {
-      // Step 1: Multi-scale image preprocessing
-      final preprocessedData = await _advancedPreprocessing(image);
-      
-      // Step 2: Multi-algorithm boundary detection with ensemble methods
-      final boundaryCandidates = await _detectBoundaryEnsemble(preprocessedData, image.width, image.height);
-      
-      // Step 3: Select best boundary using advanced scoring
-      final bestBoundary = _selectBestBoundary(boundaryCandidates, image.width, image.height);
-      
-      // Step 4: Sub-pixel boundary refinement
-      final refinedBoundary = await _subpixelRefinement(bestBoundary, preprocessedData.originalPixels, image.width, image.height);
-      
-      // Step 5: Advanced baseline detection with RANSAC
-      final baseline = _detectBaselineAdvanced(refinedBoundary);
-      
-      // Step 6: Precise contact point detection
-      final contactPoints = _findContactPointsPrecise(refinedBoundary, baseline);
-      
-      // Step 7: Advanced angle calculation with multiple methods
-      final angle = _calculateContactAngleAdvanced(refinedBoundary, contactPoints, baseline);
-      
-      // Step 8: Comprehensive quality assessment
-      final quality = _assessDetectionQuality(refinedBoundary, contactPoints, baseline);
-
-      return ProcessedImageData(
-        boundary: refinedBoundary,
-        baseline: baseline,
-        leftContact: contactPoints.left,
-        rightContact: contactPoints.right,
-        contactAngle: angle,
-        qualityScore: quality,
-      );
-    } catch (e) {
-      print('Advanced detection failed: $e');
-      return await _fallbackDetection(image);
-    }
-  }
-
-  /// Alternative method for compatibility with tests
-  static Future<ProcessedImageData> processDropletImageAuto(ui.Image image, {bool debug = false, int maxDim = 1000}) async {
-    return await processDropletImage(image);
-  }
-
-  static Future<Uint8List> _convertImageToPixels(ui.Image image) async {
-    final byteData = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
-    return byteData!.buffer.asUint8List();
-  }
-
-  /// Advanced multi-scale preprocessing with illumination correction
-  static Future<PreprocessedImageData> _advancedPreprocessing(ui.Image image) async {
-    final pixels = await _convertImageToPixels(image);
-    final tempDir = await getTemporaryDirectory();
-    final tempFile = File('${tempDir.path}/temp_image.png');
-    await tempFile.writeAsBytes(pixels);
-
-    final src = cv.imread(tempFile.path);
-    
-    // Multi-scale analysis
-    final scales = [1.0, 0.75, 0.5];
-    final processedScales = <cv.Mat>[];
-    
-    for (final scale in scales) {
-      cv.Mat scaledSrc;
-      if (scale != 1.0) {
-        final newWidth = (image.width * scale).round();
-        final newHeight = (image.height * scale).round();
-        scaledSrc = cv.resize(src, (newWidth, newHeight));
-      } else {
-        scaledSrc = src.clone();
-      }
-      
-      // Convert to different color spaces
-      final gray = cv.cvtColor(scaledSrc, cv.COLOR_BGR2GRAY);
-      final lab = cv.cvtColor(scaledSrc, cv.COLOR_BGR2Lab);
-      final hsv = cv.cvtColor(scaledSrc, cv.COLOR_BGR2HSV);
-      
-      // Extract channels for analysis
-      final labChannels = cv.split(lab);
-      final hsvChannels = cv.split(hsv);
-      final lChannel = labChannels[0];
-      final vChannel = hsvChannels[2];
-      
-      // Illumination correction using Retinex theory
-      final illuminationCorrected = _correctIllumination(lChannel);
-      
-      // Multi-scale CLAHE
-      final clahe1 = cv.createCLAHE(clipLimit: 2.0, tileGridSize: (8, 8));
-      final clahe2 = cv.createCLAHE(clipLimit: 4.0, tileGridSize: (16, 16));
-      final enhanced1 = clahe1.apply(illuminationCorrected);
-      final enhanced2 = clahe2.apply(illuminationCorrected);
-      
-      // Combine enhancements
-      final enhanced = cv.addWeighted(enhanced1, 0.6, enhanced2, 0.4, 0);
-      
-      // Advanced noise reduction with edge preservation
-      final bilateral = cv.bilateralFilter(enhanced, 9, 75, 75);
-      final nonLocalMeans = cv.fastNlMeansDenoising(bilateral);
-      
-      // Multi-scale edge enhancement
-      final edges1 = cv.Canny(nonLocalMeans, 30, 100);
-      final edges2 = cv.Canny(nonLocalMeans, 50, 150);
-      final edges3 = cv.Canny(nonLocalMeans, 70, 200);
-      
-      // Combine edge information
-      final combinedEdges = cv.addWeighted(edges1, 0.4, edges2, 0.4, 0);
-      final finalEdges = cv.addWeighted(combinedEdges, 0.7, edges3, 0.3, 0);
-      
-      // Combine intensity and edge information
-      final finalProcessed = cv.addWeighted(nonLocalMeans, 0.8, finalEdges, 0.2, 0);
-      
-      processedScales.add(finalProcessed);
-    }
-    
-    // Scale back to original size and combine
-    final originalSize = processedScales[0];
-    final mediumSize = cv.resize(processedScales[1], (image.width, image.height));
-    final smallSize = cv.resize(processedScales[2], (image.width, image.height));
-    
-    // Multi-scale fusion
-    final fused = cv.addWeighted(originalSize, 0.5, mediumSize, 0.3, 0);
-    final finalFused = cv.addWeighted(fused, 0.8, smallSize, 0.2, 0);
-    
-    return PreprocessedImageData(
-      processedImage: finalFused,
-      originalPixels: pixels,
-      scales: processedScales,
-    );
-  }
-
-  /// Illumination correction using Retinex theory
-  static cv.Mat _correctIllumination(cv.Mat image) {
-    // Estimate illumination using Gaussian blur
-    final illumination = cv.gaussianBlur(image, (51, 51), 0);
-    
-    // Avoid division by zero
-    final illuminationSafe = cv.add(illumination, cv.Scalar(1));
-    
-    // Apply Retinex correction: corrected = original / illumination
-    final corrected = cv.divide(image, illuminationSafe);
-    
-    // Normalize to 0-255 range
-    cv.normalize(corrected, corrected, 0, 255, cv.NORM_MINMAX);
-    
-    return corrected;
-  }
-
-  /// Ensemble boundary detection with multiple advanced algorithms
-  static Future<List<BoundaryCandidate>> _detectBoundaryEnsemble(PreprocessedImageData preprocessedData, int width, int height) async {
-    final candidates = <BoundaryCandidate>[];
-    
-    // Method 1: Multi-scale Canny Edge Detection
-    final cannyCandidates = await _detectBoundaryCanny(preprocessedData.processedImage, width, height);
-    candidates.addAll(cannyCandidates);
-    
-    // Method 2: Advanced Thresholding Ensemble
-    final thresholdCandidates = await _detectBoundaryThresholding(preprocessedData.processedImage, width, height);
-    candidates.addAll(thresholdCandidates);
-    
-    // Method 3: Watershed Segmentation
-    final watershedCandidates = await _detectBoundaryWatershed(preprocessedData.processedImage, width, height);
-    candidates.addAll(watershedCandidates);
-    
-    // Method 4: Active Contours (Snake Algorithm)
-    final snakeCandidates = await _detectBoundaryActiveContours(preprocessedData.processedImage, width, height);
-    candidates.addAll(snakeCandidates);
-    
-    // Method 5: Gradient-based Detection
-    final gradientCandidates = await _detectBoundaryGradient(preprocessedData.processedImage, width, height);
-    candidates.addAll(gradientCandidates);
-    
-    // Method 6: Machine Learning-based Detection (if available)
-    final mlCandidates = await _detectBoundaryML(preprocessedData.processedImage, width, height);
-    candidates.addAll(mlCandidates);
-    
-    return candidates;
-  }
-
-  /// Multi-scale Canny edge detection
-  static Future<List<BoundaryCandidate>> _detectBoundaryCanny(cv.Mat image, int width, int height) async {
-    final candidates = <BoundaryCandidate>[];
-    
-    // Multiple Canny thresholds for different scales
-    final thresholds = [
-      [30, 100], [50, 150], [70, 200], [100, 250]
-    ];
-    
-    for (final threshold in thresholds) {
-      final edges = cv.Canny(image, threshold[0], threshold[1]);
-      
-      // Morphological operations to connect edges
-      final kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, (3, 3));
-      final morphed = cv.morphologyEx(edges, cv.MORPH_CLOSE, kernel);
-      
-      // Find contours
-      final (contours, _) = cv.findContours(morphed, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_TC89_L1);
-      
-      for (final contour in contours) {
-        final boundary = _contourToOffsetList(contour);
-        if (boundary.length > 20) {
-          final score = _scoreBoundaryCanny(boundary, width, height);
-          candidates.add(BoundaryCandidate(
-            boundary: boundary,
-            method: 'Canny_${threshold[0]}_${threshold[1]}',
-            score: score,
-            confidence: _calculateConfidence(boundary, width, height),
-          ));
-        }
-      }
-    }
-    
-    return candidates;
-  }
-
-  /// Advanced thresholding ensemble
-  static Future<List<BoundaryCandidate>> _detectBoundaryThresholding(cv.Mat image, int width, int height) async {
-    final candidates = <BoundaryCandidate>[];
-    
-    // Otsu's thresholding
-    final (_, otsu) = cv.threshold(image, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_OTSU);
-    final otsuCandidates = _extractContoursFromBinary(otsu, width, height, 'Otsu');
-    candidates.addAll(otsuCandidates);
-    
-    // Adaptive thresholding with different parameters
-    final adaptiveParams = [
-      [11, 2], [15, 3], [21, 4]
-    ];
-    
-    for (final params in adaptiveParams) {
-      final adaptive = cv.adaptiveThreshold(
-        image, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, params[0], params[1]
-      );
-      final adaptiveCandidates = _extractContoursFromBinary(adaptive, width, height, 'Adaptive_${params[0]}_${params[1]}');
-      candidates.addAll(adaptiveCandidates);
-    }
-    
-    // Triangle thresholding
-    final (_, triangle) = cv.threshold(image, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_TRIANGLE);
-    final triangleCandidates = _extractContoursFromBinary(triangle, width, height, 'Triangle');
-    candidates.addAll(triangleCandidates);
-    
-    return candidates;
-  }
-
-  /// Watershed segmentation for droplet separation
-  static Future<List<BoundaryCandidate>> _detectBoundaryWatershed(cv.Mat image, int width, int height) async {
-    final candidates = <BoundaryCandidate>[];
-    
-    try {
-      // Apply distance transform
-      final binary = cv.threshold(image, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_OTSU).$2;
-      final distTransform = cv.distanceTransform(binary, cv.DIST_L2, 5);
-      
-      // Normalize distance transform
-      cv.normalize(distTransform, distTransform, 0, 255, cv.NORM_MINMAX);
-      
-      // Threshold to get sure foreground
-      final (_, sureFg) = cv.threshold(distTransform, 0.7 * 255, 255, cv.THRESH_BINARY);
-      
-      // Find unknown region
-      final kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, (3, 3));
-      final sureBg = cv.dilate(binary, kernel, iterations: 3);
-      final unknown = cv.subtract(sureBg, sureFg);
-      
-      // Create markers
-      final markers = cv.connectedComponents(sureFg);
-      markers.setTo(0, unknown);
-      
-      // Apply watershed
-      final result = image.clone();
-      cv.watershed(result, markers);
-      
-      // Extract contours from watershed result
-      final watershedCandidates = _extractContoursFromBinary(markers, width, height, 'Watershed');
-      candidates.addAll(watershedCandidates);
-      
-    } catch (e) {
-      print('Watershed segmentation failed: $e');
-    }
-    
-    return candidates;
-  }
-
-  /// Active contours (Snake algorithm) for boundary detection
-  static Future<List<BoundaryCandidate>> _detectBoundaryActiveContours(cv.Mat image, int width, int height) async {
-    final candidates = <BoundaryCandidate>[];
-    
-    try {
-      // Create initial snake points (circular initialization)
-      final centerX = width / 2;
-      final centerY = height / 2;
-      final radius = min(width, height) / 4;
-      
-      final initialSnake = <Offset>[];
-      for (int i = 0; i < 36; i++) {
-        final angle = (i * 10) * pi / 180;
-        final x = centerX + radius * cos(angle);
-        final y = centerY + radius * sin(angle);
-        initialSnake.add(Offset(x, y));
-      }
-      
-      // Apply snake algorithm
-      final finalSnake = _applySnakeAlgorithm(image, initialSnake, width, height);
-      
-      if (finalSnake.length > 10) {
-        final score = _scoreBoundarySnake(finalSnake, image, width, height);
-        candidates.add(BoundaryCandidate(
-          boundary: finalSnake,
-          method: 'ActiveContours',
-          score: score,
-          confidence: _calculateConfidence(finalSnake, width, height),
-        ));
-      }
-      
-    } catch (e) {
-      print('Active contours failed: $e');
-    }
-    
-    return candidates;
-  }
-
-  /// Gradient-based boundary detection
-  static Future<List<BoundaryCandidate>> _detectBoundaryGradient(cv.Mat image, int width, int height) async {
-    final candidates = <BoundaryCandidate>[];
-    
-    try {
-      // Calculate gradients
-      final gradX = cv.Sobel(image, cv.CV_64F, 1, 0, ksize: 3);
-      final gradY = cv.Sobel(image, cv.CV_64F, 0, 1, ksize: 3);
-      
-      // Calculate gradient magnitude
-      final gradMag = cv.magnitude(gradX, gradY);
-      
+  // ...existing code... (keep only one set of static methods, no duplicates)
+}
       // Threshold gradient magnitude
       final (_, gradBinary) = cv.threshold(gradMag, 50, 255, cv.THRESH_BINARY);
       
@@ -1658,79 +1377,3 @@ class ImageProcessor {
 
 // --- Data Structures ---
 
-class ProcessedImageData {
-  final List<Offset> boundary;
-  final BaselineData baseline;
-  final Offset leftContact;
-  final Offset rightContact;
-  final double contactAngle;
-  final double qualityScore;
-
-  ProcessedImageData({
-    required this.boundary,
-    required this.baseline,
-    required this.leftContact,
-    required this.rightContact,
-    required this.contactAngle,
-    required this.qualityScore,
-  });
-}
-
-class BaselineData {
-  final Offset startPoint;
-  final Offset endPoint;
-  final double slope;
-  final double intercept;
-
-  BaselineData({
-    required this.startPoint,
-    required this.endPoint,
-  }) : slope = (endPoint.dy - startPoint.dy) / (endPoint.dx - startPoint.dx),
-       intercept = startPoint.dy - ((endPoint.dy - startPoint.dy) / (endPoint.dx - startPoint.dx)) * startPoint.dx;
-}
-
-class ContactPointPair {
-  final Offset left;
-  final Offset right;
-
-  ContactPointPair({
-    required this.left,
-    required this.right,
-  });
-}
-
-class LineParameters {
-  final double slope;
-  final double intercept;
-
-  LineParameters({
-    required this.slope,
-    required this.intercept,
-  });
-}
-
-class PreprocessedImageData {
-  final cv.Mat processedImage;
-  final Uint8List originalPixels;
-  final List<cv.Mat> scales;
-
-  PreprocessedImageData({
-    required this.processedImage,
-    required this.originalPixels,
-    required this.scales,
-  });
-}
-
-class BoundaryCandidate {
-  final List<Offset> boundary;
-  final String method;
-  final double score;
-  final double confidence;
-
-  BoundaryCandidate({
-    required this.boundary,
-    required this.method,
-    required this.score,
-    required this.confidence,
-  });
-}
