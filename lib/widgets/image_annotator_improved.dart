@@ -2,6 +2,7 @@ import 'dart:ui' as ui;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import '../image_processor.dart';
+import 'package:image_picker/image_picker.dart';
 
 // Example: batch image filenames for testing
 final List<String> testImagePaths = [
@@ -32,7 +33,7 @@ class _ImageAnnotatorImprovedState extends State<ImageAnnotatorImproved> {
   String _processingStatus = '';
   final GlobalKey _repaintKey = GlobalKey();
 
-  // --- EXAMPLE: MAIN PROCESSING FUNCTION CALL ---
+  // --- MAIN PROCESSING FUNCTION CALL ---
   Future<void> _processImage(ui.Image image) async {
     setState(() {
       _isProcessing = true;
@@ -41,14 +42,14 @@ class _ImageAnnotatorImprovedState extends State<ImageAnnotatorImproved> {
     try {
       final result = await processDropletImage(image);
       setState(() {
-        _contour = result.boundary;
-        _leftContact = result.leftContact;
-        _rightContact = result.rightContact;
-        _baselineA = result.baseline.startPoint;
-        _baselineB = result.baseline.endPoint;
-        _measuredAngle = result.contactAngle;
-        _qualityScore = result.qualityScore;
-        _processingStatus = "Done";
+        _contour = result?.boundary;
+        _leftContact = result?.leftContact;
+        _rightContact = result?.rightContact;
+        _baselineA = result?.baseline.startPoint;
+        _baselineB = result?.baseline.endPoint;
+        _measuredAngle = result?.bestAngle ?? result?.avgAngle;
+        _qualityScore = result?.qualityScore;
+        _processingStatus = result == null ? "No result" : "Done";
         _isProcessing = false;
       });
     } catch (e) {
@@ -63,43 +64,73 @@ class _ImageAnnotatorImprovedState extends State<ImageAnnotatorImproved> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Contact Angle Annotator")),
-      body: Column(
-        children: [
-          // --- Your image load/display widgets ---
-          if (_image != null)
-            Expanded(
-              child: RepaintBoundary(
-                key: _repaintKey,
-                child: Stack(
-                  children: [
-                    // Paint image here
-                    // Overlay detection and angle if available
-                    if (_contour != null && _showOverlay)
-                      CustomPaint(
-                        painter: ContourPainter(
-                          contour: _contour!,
-                          leftContact: _leftContact,
-                          rightContact: _rightContact,
-                          baselineA: _baselineA,
-                          baselineB: _baselineB,
-                        ),
+      appBar: AppBar(title: const Text('Contact Angle Annotator')),
+      body: Center(
+        child: _image == null
+            ? const Text('No image loaded')
+            : Stack(
+                children: [
+                  RepaintBoundary(
+                    key: _repaintKey,
+                    child: CustomPaint(
+                      painter: _image != null
+                          ? ContourPainter(
+                              contour: _contour ?? [],
+                              leftContact: _leftContact,
+                              rightContact: _rightContact,
+                              baselineA: _baselineA,
+                              baselineB: _baselineB,
+                            )
+                          : null,
+                    ),
+                  ),
+                  if (_isProcessing)
+                    const Center(child: CircularProgressIndicator()),
+                  if (_processingStatus.isNotEmpty)
+                    Positioned(
+                      bottom: 16,
+                      left: 16,
+                      child: Container(
+                        padding: const EdgeInsets.all(8),
+                        color: Colors.black54,
+                        child: Text(_processingStatus,
+                            style: const TextStyle(color: Colors.white)),
                       ),
-                  ],
-                ),
+                    ),
+                  if (!_isProcessing && _contour == null)
+                    const Center(child: Text('No result available', style: TextStyle(fontSize: 18))),
+                ],
               ),
-            ),
-          if (_isProcessing) const CircularProgressIndicator(),
-          if (_measuredAngle != null)
-            Text('Contact Angle: ${_measuredAngle!.toStringAsFixed(1)}°'),
-          if (_qualityScore != null)
-            Text('Quality: ${(100 * _qualityScore!).toStringAsFixed(0)}%'),
-          // --- Buttons and controls: implement your file picker/share logic here ---
-        ],
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () {
-          // Example: Call _processImage for demo image
+        onPressed: () async {
+          setState(() {
+            _isProcessing = true;
+            _processingStatus = "Selecting image...";
+          });
+          try {
+            final picker = ImagePicker();
+            final pickedFile = await picker.pickImage(source: ImageSource.gallery);
+            if (pickedFile == null) {
+              setState(() {
+                _processingStatus = "No image selected.";
+                _isProcessing = false;
+              });
+              return;
+            }
+            final imageBytes = await pickedFile.readAsBytes();
+            final codec = await ui.instantiateImageCodec(imageBytes);
+            final frame = await codec.getNextFrame();
+            setState(() {
+              _image = frame.image;
+            });
+            await _processImage(frame.image);
+          } catch (e) {
+            setState(() {
+              _processingStatus = "Failed to load/process image: $e";
+              _isProcessing = false;
+            });
+          }
         },
         child: const Icon(Icons.analytics),
       ),
