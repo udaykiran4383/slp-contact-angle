@@ -1,4 +1,3 @@
-
 // ----------- IMPORTS (must be at the very top) -----------
 import 'dart:io';
 import 'dart:typed_data';
@@ -9,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:opencv_dart/opencv_dart.dart' as cv;
 import 'package:path_provider/path_provider.dart';
 import 'processing/angle_utils.dart';
+import 'utils/file_utils.dart';
 
 // --------- Data classes for processing results ---------
 class BoundaryCandidate {
@@ -73,11 +73,123 @@ class ContactPointPair {
   ContactPointPair({required this.left, required this.right});
 }
 
+// Helper function to create empty result when processing fails
+ProcessedImageData _createEmptyResult() {
+  return ProcessedImageData(
+    boundary: [],
+    baseline: BaselineData(
+      startPoint: Offset.zero,
+      endPoint: Offset.zero,
+      score: 0.0,
+      method: "none",
+    ),
+    leftContact: Offset.zero,
+    rightContact: Offset.zero,
+    leftAngle: 0.0,
+    rightAngle: 0.0,
+    avgAngle: 0.0,
+    bestAngle: 0.0,
+    qualityScore: 0.0,
+  );
+}
+
 // --------- Helper functions ---------
 Future<Uint8List> convertImageToPixels(ui.Image image) async {
   final byteData = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
-  return byteData!.buffer.asUint8List();
+  if (byteData == null) {
+    throw Exception('Failed to convert image to bytes');
+  }
+  return byteData.buffer.asUint8List();
 }
+
+Future<ProcessedImage> processImage(ui.Image image) async {
+  try {
+    // Convert image to bytes
+    final imageData = await convertImageToPixels(image);
+    
+    // Create a temporary file to save the image
+    final tempFile = await tempFileFromPixels(imageData);
+    
+    // Decode image from file to ensure proper loading
+    final grayImage = cv.imread(tempFile.path, flags: cv.IMREAD_GRAYSCALE);
+    if (grayImage == null) {
+      print('Failed to load image from ${tempFile.path}');
+      throw Exception('Failed to decode image to grayscale');
+    }
+    print('Loaded grayscale image size: ${grayImage.rows}x${grayImage.cols}');
+
+    try {
+      // Create CLAHE object with default parameters
+      final clahe = cv.createCLAHE(clipLimit: 2.0, tileGridSize: (8, 8));
+      if (clahe == null) {
+        grayImage.release();
+        throw Exception('Failed to create CLAHE');
+      }
+
+      // Apply CLAHE
+      final enhanced = clahe.apply(grayImage);
+      if (enhanced == null) {
+        grayImage.release();
+        throw Exception('CLAHE enhancement failed');
+      }
+      print('CLAHE output size: ${enhanced.rows}x${enhanced.cols}');
+
+      try {
+        // Apply median blur
+        print('Applying median blur...');
+        final blurred = cv.medianBlur(enhanced, 5);
+        if (blurred == null) {
+          enhanced.release();
+          grayImage.release();
+          throw Exception('Median blur failed');
+        }
+        print('Median blur complete. Output size: ${blurred.rows}x${blurred.cols}');
+
+        try {
+          // Process the blurred image for boundary detection
+          final boundaries = await detectBoundaryThresholding(blurred);
+          
+          // Process the best boundary to find the contact angle
+          if (boundaries.isEmpty) {
+            return createEmptyResult();
+          }
+
+          // Sort boundaries by score
+          boundaries.sort((a, b) => b.score.compareTo(a.score));
+          final bestBoundary = boundaries.first;
+
+          // Calculate baseline and contact points
+          final baseline = await findBaselineFitted(bestBoundary.boundary);
+          final contactPoints = findContactPoints(bestBoundary.boundary, baseline);
+          
+          // Calculate angles
+          final leftAngle = calculateContactAngle(contactPoints.left, baseline);
+          final rightAngle = calculateContactAngle(contactPoints.right, baseline);
+          
+          return ProcessedImage(
+            boundary: bestBoundary.boundary,
+            baseline: baseline,
+            leftContact: contactPoints.left,
+            rightContact: contactPoints.right,
+            leftAngle: leftAngle,
+            rightAngle: rightAngle,
+            avgAngle: (leftAngle + rightAngle) / 2,
+            bestAngle: leftAngle > rightAngle ? leftAngle : rightAngle,
+            qualityScore: bestBoundary.score,
+          );
+        } finally {
+          blurred.release();
+        }
+      } finally {
+        enhanced.release();
+      }
+    } finally {
+      grayImage.release();
+    }
+  } catch (e) {
+    print('Error in image processing: $e');
+    return createEmptyResult();
+  }
 
 Future<File> tempFileFromPixels(Uint8List pixels) async {
   final tempDir = await getTemporaryDirectory();
@@ -89,23 +201,42 @@ Future<File> tempFileFromPixels(Uint8List pixels) async {
 Future<List<BoundaryCandidate>> contoursFromBinary(
     cv.Mat bin, int width, int height, String method) async {
   final findResult = cv.findContours(bin, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+  if (findResult == null) {
+    throw Exception('Failed to find contours in binary image');
+  }
+  
   final contours = findResult.$1;
+  if (contours == null) {
+    throw Exception('No contours found in binary image');
+  }
+  
   final out = <BoundaryCandidate>[];
-  for (final contour in contours) {
-    final List<Offset> b = [
-      for (int i = 0; i < contour.length; i++)
-        Offset(contour[i].x.toDouble(), contour[i].y.toDouble())
-    ];
-    if (b.length > 12) {
-      out.add(BoundaryCandidate(
-        boundary: b,
-        method: method,
-        score: scoreBoundaryGeneric(b, width, height),
-        confidence: 0.0,
-      ));
+  
+  try {
+    for (final contour in contours) {
+      if (contour == null || contour.isEmpty) continue;
+      
+      final List<Offset> b = [
+        for (int i = 0; i < contour.length; i++)
+          Offset(contour[i].x.toDouble(), contour[i].y.toDouble())
+      ];
+      
+      if (b.length > 12) {
+        out.add(BoundaryCandidate(
+          boundary: b,
+          method: method,
+          score: scoreBoundaryGeneric(b, width, height),
+          confidence: 0.0,
+        ));
+      }
+    }
+    return out;
+  } finally {
+    // Clean up any resources from findContours if needed
+    if (findResult.$2 != null) {
+      findResult.$2.release();
     }
   }
-  return out;
 }
 
 double calculatePolygonArea(List<Offset> points) {
@@ -129,89 +260,165 @@ double scoreBoundaryGeneric(List<Offset> b, int width, int height) {
 // --------- CORE PROCESSING ROUTINES (top-level!) ----------
 
 Future<ProcessedImageData> processDropletImage(ui.Image image) async {
-  final imageData = await convertImageToPixels(image);
-  final cvImage = cv.Mat.fromBytes(image.height, image.width, cv.CV_8UC4, imageData);
-  final grayImage = cv.Mat.empty();
-  cv.cvtColor(cvImage, grayImage, cv.COLOR_BGRA2GRAY);
+  try {
+    final imageData = await convertImageToPixels(image);
+    if (imageData == null || imageData.isEmpty) {
+      throw Exception('Failed to convert image to pixels');
+    }
 
-  // Advanced Pre-processing: CLAHE and denoising
-  cv.Mat enhanced = cv.Mat.empty();
-  cv.CLAHE clahe = cv.createCLAHE(clipLimit: 2.0, tileGridSize: (8, 8));
-  clahe.apply(grayImage, enhanced);
-  cv.medianBlur(enhanced, enhanced, 5);
+    print('Image size: ${image.width}x${image.height}, bytes: ${imageData.length}');
+    
+    // Create a temporary file to save the image
+    final tempFile = await tempFileFromPixels(imageData);
+    
+    // Decode image from file to ensure proper loading
+    final grayImage = cv.imread(tempFile.path, flags: cv.IMREAD_GRAYSCALE);
+    if (grayImage == null) {
+      print('Failed to load image from ${tempFile.path}');
+      throw Exception('Failed to decode image to grayscale');
+    }
+    print('Loaded grayscale image size: ${grayImage.rows}x${grayImage.cols}');
 
-  // Boundary Detection
-  final boundaries = await detectBoundaryThresholding(enhanced, image.width, image.height);
-  if (boundaries.isEmpty) {
-    // Handle case where no droplet is found
-    return ProcessedImageData(
-      boundary: [],
-      baseline: BaselineData(startPoint: Offset.zero, endPoint: Offset.zero, score: 0.0, method: "none"),
-      leftContact: Offset.zero,
-      rightContact: Offset.zero,
-      leftAngle: 0.0,
-      rightAngle: 0.0,
-      avgAngle: 0.0,
-      bestAngle: 0.0,
-      qualityScore: 0.0,
+    // Advanced Pre-processing: CLAHE and denoising
+    final clahe = cv.createCLAHE(clipLimit: 2.0, tileGridSize: (8, 8));
+    if (clahe == null) {
+      grayImage.release();
+      throw Exception('Failed to create CLAHE');
+    }
+    
+    try {
+      final enhanced = clahe.apply(grayImage);
+      print('CLAHE output size: ${enhanced?.rows ?? 0}x${enhanced?.cols ?? 0}');
+      
+      if (enhanced == null) {
+        grayImage.release();
+        throw Exception('CLAHE enhancement failed');
+      }
+
+      try {
+        print('Applying median blur...');
+        final blurred = cv.medianBlur(enhanced, 5);
+        if (blurred == null) {
+          enhanced.release();
+          throw Exception('Median blur failed');
+        }
+        print('Median blur complete. Output size: ${blurred.rows}x${blurred.cols}');
+        
+        enhanced.release();
+        
+        // Process the blurred image for boundary detection
+        final boundaries = await detectBoundaryThresholding(blurred);
+        
+        // Clean up resources
+        blurred.release();
+        
+        return boundaries;
+      } catch (e) {
+        print('Median blur error: $e');
+        enhanced.release();
+        throw e;
+      }
+    } catch (e) {
+      print('CLAHE error: $e');
+      grayImage.release();
+      throw e;
+    }
+
+    // Boundary Detection
+    final boundaries = await detectBoundaryThresholding(blurred, image.width, image.height);
+    
+    // Clean up OpenCV resources
+    grayImage.release();
+    enhanced.release();
+    blurred.release();
+
+    if (boundaries.isEmpty) {
+      return _createEmptyResult();
+    }
+
+    // Select the best candidate
+    final bestBoundary = boundaries.reduce((a, b) => a.score > b.score ? a : b);
+
+    // Baseline Detection (Advanced Fusion)
+    final baseline = detectBaselineAdvanced(bestBoundary.boundary);
+
+    // Subpixel contact point refinement
+    final contacts = findContactPointsPrecise(bestBoundary.boundary, baseline);
+    
+    // Create normalized normal vectors for contact point refinement
+    final leftVec = Offset(-baseline.slope, 1.0);
+    final rightVec = Offset(baseline.slope, -1.0);
+    final leftNormal = Offset(leftVec.dx / leftVec.distance, leftVec.dy / leftVec.distance);
+    final rightNormal = Offset(rightVec.dx / rightVec.distance, rightVec.dy / rightVec.distance);
+
+    final refinedLeftContact = subpixelRefineFromRGBA(
+      rgba: imageData,
+      width: image.width,
+      height: image.height,
+      approx: contacts.left,
+      normal: leftNormal,
+      samples: 25,
+      spacing: 0.6,
     );
-  }
-  // Select the best candidate
-  final bestBoundary = boundaries.reduce((a, b) => a.score > b.score ? a : b);
 
-  // Baseline Detection (Advanced Fusion)
-  final baseline = detectBaselineAdvanced(bestBoundary.boundary);
+    final refinedRightContact = subpixelRefineFromRGBA(
+      rgba: imageData,
+      width: image.width,
+      height: image.height,
+      approx: contacts.right,
+      normal: rightNormal,
+      samples: 25,
+      spacing: 0.6,
+    );
 
-  // Subpixel contact point refinement
-  final contacts = findContactPointsPrecise(bestBoundary.boundary, baseline);
-  final refinedLeftContact = subpixelRefineFromRGBA(
-    rgba: imageData,
-    width: image.width,
-    height: image.height,
-    approx: contacts.left,
-    normal: Offset(-baseline.slope, 1.0).direction,
-    samples: 25,
-    spacing: 0.6,
-  );
-  final refinedRightContact = subpixelRefineFromRGBA(
-    rgba: imageData,
-    width: image.width,
-    height: image.height,
-    approx: contacts.right,
-    normal: Offset(baseline.slope, -1.0).direction,
-    samples: 25,
-    spacing: 0.6,
-  );
-
-  // Angle Calculation
-  final (leftAngle, rightAngle) = calculateContactAngleAdvanced(
+    // Calculate angles
+    final (leftAngle, rightAngle) = calculateContactAngleAdvanced(
       bestBoundary.boundary,
       ContactPointPair(left: refinedLeftContact, right: refinedRightContact),
-      baseline);
-  
-  final avgAngle = (leftAngle + rightAngle) / 2.0;
-  final bestAngle = (bestBoundary.boundary.first.dx < bestBoundary.boundary.last.dx) ? leftAngle : rightAngle;
+      baseline
+    );
 
-  return ProcessedImageData(
-    boundary: bestBoundary.boundary,
-    baseline: baseline,
-    leftContact: refinedLeftContact,
-    rightContact: refinedRightContact,
-    leftAngle: leftAngle,
-    rightAngle: rightAngle,
-    avgAngle: avgAngle,
-    bestAngle: bestAngle,
-    qualityScore: bestBoundary.score,
-  );
+    final avgAngle = (leftAngle + rightAngle) / 2.0;
+    final bestAngle = (bestBoundary.boundary.first.dx < bestBoundary.boundary.last.dx) 
+      ? leftAngle 
+      : rightAngle;
+
+    return ProcessedImageData(
+      boundary: bestBoundary.boundary,
+      baseline: baseline,
+      leftContact: refinedLeftContact,
+      rightContact: refinedRightContact,
+      leftAngle: leftAngle,
+      rightAngle: rightAngle,
+      avgAngle: avgAngle,
+      bestAngle: bestAngle,
+      qualityScore: bestBoundary.score,
+    );
+  } catch (e) {
+    print('Image processing error: $e');
+    return _createEmptyResult();
+  }
 }
 
-Future<List<BoundaryCandidate>> detectBoundaryThresholding(
-    cv.Mat image, int width, int height) async {
+Future<List<BoundaryCandidate>> detectBoundaryThresholding(cv.Mat image) async {
   final candidates = <BoundaryCandidate>[];
+  
   // Simple Otsu's thresholding
   final result = cv.threshold(image, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_OTSU);
+  if (result == null) {
+    throw Exception('Thresholding failed');
+  }
+  
   final otsu = result.$2;
-  candidates.addAll(await contoursFromBinary(otsu, width, height, "Otsu"));
+  if (otsu == null) {
+    throw Exception('No threshold result obtained');
+  }
+  
+  candidates.addAll(await contoursFromBinary(otsu, image.rows, image.cols, "Otsu"));
+  
+  // Clean up
+  otsu.release();
+  
   return candidates;
 }
 
@@ -246,9 +453,6 @@ BaselineData detectBaselineAdvanced(List<Offset> boundary) {
     score: ransacLine['inliers']!,
     method: "RANSAC",
   );
-
-  // Add other methods here and score them, then select the best one.
-  // For now, we return the RANSAC result, but this structure allows for expansion.
 
   return ransacBaseline;
 }
