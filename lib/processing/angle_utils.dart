@@ -11,7 +11,13 @@ Map<String, double> fitLineRANSACRefined(
   double? slopePrior,
   double slopePriorWeight = 0.0,
 }) {
-  if (pts.length < 2) return {'m': 0.0, 'c': pts.isNotEmpty ? pts.first.dy : 0.0};
+  if (pts.length < 2) {
+    return {
+      'm': 0.0,
+      'c': pts.isNotEmpty ? pts.first.dy : 0.0,
+      'inliers': 0.0,
+    };
+  }
   final rnd = Random();
   double bestM = 0.0, bestC = 0.0;
   int bestInliers = -1;
@@ -36,7 +42,7 @@ Map<String, double> fitLineRANSACRefined(
       bestC = c;
     }
   }
-  return {'m': bestM, 'c': bestC};
+  return {'m': bestM, 'c': bestC, 'inliers': bestInliers.toDouble()};
 }
 
 // --- Subpixel boundary refinement (gradient along normal) ---
