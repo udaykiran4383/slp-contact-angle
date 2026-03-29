@@ -9,29 +9,47 @@ import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import '../image_processor.dart';
+// Minimal widget for main.dart compatibility
 
-class ImageAnnotatorScreen extends StatefulWidget {
-  const ImageAnnotatorScreen({super.key});
+class ImageAnnotatorImproved extends StatefulWidget {
+  const ImageAnnotatorImproved({Key? key}) : super(key: key);
 
   @override
-  State<ImageAnnotatorScreen> createState() => _ImageAnnotatorScreenState();
+  State<ImageAnnotatorImproved> createState() => _ImageAnnotatorImprovedState();
 }
 
-class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
-  final GlobalKey _repaintKey = GlobalKey();
+class _ImageAnnotatorImprovedState extends State<ImageAnnotatorImproved> {
+  // Declare all private state variables used in the widget
+  List<Offset>? _contour;
+  Offset? _leftContact, _rightContact;
+  Offset? _baselineA, _baselineB;
+  double? _measuredAngle, _qualityScore;
   bool _showOverlay = true;
-  ui.Image? _image;
-  List<Offset> _contour = [];
-  Offset? _leftContact;
-  Offset? _rightContact;
-  Offset? _baselineA;
-  Offset? _baselineB;
-
-  double _measuredAngle = 0.0;
   bool _isProcessing = false;
-  String? _dragging;
-  bool _autoDetectionMode = true;
-  String _processingStatus = 'Ready';
+  String _processingStatus = '';
+  ui.Image? _image;
+  final GlobalKey _repaintKey = GlobalKey();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Contact Angle Annotator')),
+      body: Center(child: Text('Image annotation UI goes here!')),
+    );
+  }
+}
+    'PFOTES/C_1.5%_1 coat_6.JPG',
+    'PFOTES/C_1.5%_2 coat_5.JPG',
+    'PFOTES/C_1.5%_2 coat_6.JPG',
+    'PFOTES/C_3%_1 coat_5.JPG',
+    'PFOTES/C_3%_1 coat_5a.JPG',
+    'PFOTES/C_3%_1 coat_6a.JPG',
+    'PFOTES/C_3%_1 coat_6b.JPG',
+    'PFOTES/C_3%_2 coat_5a.JPG',
+    'PFOTES/C_3%_2 coat_5b.JPG',
+    'PFOTES/C_3%_2 coat_6a.JPG',
+    'PFOTES/C_3%_2 coat_6b.JPG',
+  ];
 
   @override
   void initState() {
@@ -40,25 +58,113 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
   }
 
   void _initMock() {
-    final RenderBox? box = context.findRenderObject() as RenderBox?;
-    if (box == null) return;
-    final Size s = box.size;
-    final center = Offset(s.width / 2, s.height / 2);
+    setState(() {
+      _image = null;
+      _contour = [];
+      _leftContact = null;
+      _rightContact = null;
+      _baselineA = null;
+      _baselineB = null;
+      _measuredAngle = 0.0;
+      _isProcessing = false;
+      _processingStatus = 'Ready';
+    });
+  }
 
-    _contour = List.generate(160, (i) {
-      final t = i / 160.0 * 2 * pi;
-      final rx = 130.0 + 6.0 * (i % 5);
-      final ry = 90.0 + 4.0 * ((i + 3) % 7);
-      return center + Offset(rx * cos(t), ry * sin(t));
+  Future<void> _runTestBatch() async {
+    setState(() {
+      _isProcessing = true;
+      _processingStatus = 'Running test batch...';
+      _image = null;
+      _contour = [];
+      _leftContact = null;
+      _rightContact = null;
+      _baselineA = null;
+      _baselineB = null;
     });
 
-    _leftContact = center + const Offset(-110, 40);
-    _rightContact = center + const Offset(110, 40);
-    _baselineA = center + const Offset(-160, 140);
-    _baselineB = center + const Offset(160, 140);
+    final allResults = <ProcessedImageData>[];
 
-    _calculateAngle();
-    setState(() {});
+    for (var path in _testImagePaths) {
+      setState(() {
+        _processingStatus = 'Processing $path...';
+      });
+      try {
+        final ByteData bytes = await rootBundle.load('assets/$path');
+        final ui.Image image = await decodeImageFromList(bytes.buffer.asUint8List());
+        final processedData = await ImageProcessor.processDropletImage(image);
+        allResults.add(processedData);
+      } catch (e) {
+        debugPrint('Error processing image $path: $e');
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _isProcessing = false;
+        _processingStatus = 'Batch analysis complete';
+      });
+      _showBatchResults(allResults);
+    }
+  }
+
+  void _showBatchResults(List<ProcessedImageData> results) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: Colors.black,
+        title: const Text(
+          'Batch Test Results',
+          style: TextStyle(color: Colors.tealAccent, fontWeight: FontWeight.bold),
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView.builder(
+            itemCount: results.length,
+            itemBuilder: (context, index) {
+              final result = results[index];
+              final imagePath = _testImagePaths[index].split('/').last;
+              return Card(
+                color: Colors.grey[900],
+                margin: const EdgeInsets.symmetric(vertical: 8),
+                child: ListTile(
+                  title: Text(
+                    imagePath,
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Contact Angle: ${result.contactAngle.toStringAsFixed(2)}°',
+                        style: const TextStyle(color: Colors.cyanAccent),
+                      ),
+                      Text(
+                        'Quality Score: ${(result.qualityScore * 100).toStringAsFixed(0)}%',
+                        style: TextStyle(
+                          color: result.qualityScore > 0.8 
+                            ? Colors.green 
+                            : result.qualityScore > 0.6 
+                              ? Colors.orange 
+                              : Colors.red,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Close', style: TextStyle(color: Colors.tealAccent)),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _captureImage() async {
@@ -102,23 +208,14 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
       _isProcessing = true;
       _processingStatus = 'Loading image...';
     });
-
     try {
       final bytes = await imageFile.readAsBytes();
       final ui.Image image = await decodeImageFromList(bytes);
-
       setState(() {
         _image = image;
         _processingStatus = 'Analyzing droplet...';
       });
-
-      if (_autoDetectionMode) {
-        await _performAutomaticDetection(image);
-      } else {
-        // Fallback to manual mode with mock contour
-        await _createMockContour(image);
-      }
-
+      await _performAutomaticDetection(image);
       setState(() {
         _isProcessing = false;
         _processingStatus = 'Analysis complete';
@@ -139,86 +236,44 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
       setState(() {
         _processingStatus = 'Detecting droplet boundary...';
       });
-
-      // Use the ImageProcessor to automatically detect everything
       final processedData = await ImageProcessor.processDropletImage(image);
-
+      if (mounted) {
       setState(() {
-        _contour = processedData.boundary;
-        _leftContact = processedData.leftContact;
-        _rightContact = processedData.rightContact;
-        _baselineA = processedData.baseline.startPoint;
-        _baselineB = processedData.baseline.endPoint;
-        _measuredAngle = processedData.contactAngle;
-        _processingStatus = 'Detection complete - Angle: ${processedData.contactAngle.toStringAsFixed(1)}°';
-      });
+          _contour = processedData.boundary;
+          _leftContact = processedData.leftContact;
+          _rightContact = processedData.rightContact;
+          _baselineA = processedData.baseline.startPoint;
+          _baselineB = processedData.baseline.endPoint;
+          _measuredAngle = processedData.contactAngle;
+          _qualityScore = processedData.qualityScore;
+          _processingStatus = 'Detection complete - Angle: ${processedData.contactAngle.toStringAsFixed(1)}° (Quality: ${(processedData.qualityScore * 100).toStringAsFixed(0)}%)';
+        });
+      }
     } catch (e) {
-      // Fallback to mock data if automatic detection fails
       debugPrint('Automatic detection failed: $e');
-      await _createMockContour(image);
+      if (mounted) {
       setState(() {
-        _processingStatus = 'Using manual mode (auto-detection failed)';
-      });
+          _processingStatus = 'Automatic detection failed.';
+        });
+      }
     }
   }
 
-  Future<void> _createMockContour(ui.Image image) async {
-    final imageWidth = image.width.toDouble();
-    final imageHeight = image.height.toDouble();
-
-    final center = Offset(imageWidth / 2, imageHeight * 0.6);
-    final mockContour = List.generate(120, (i) {
-      final t = i / 120.0 * 2 * pi;
-      final rx = imageWidth * 0.15 + (i % 6) * 2;
-      final ry = imageHeight * 0.1 + (i % 7) * 1.5;
-      return center + Offset(rx * cos(t), ry * sin(t));
-    });
-
-    setState(() {
-      _contour = mockContour;
-      if (_contour.isNotEmpty) {
-        _autoDetectContactPoints();
-        _autoSetBaseline();
-      }
-      _calculateAngle();
-    });
-  }
-
-  void _autoDetectContactPoints() {
-    if (_contour.isEmpty) return;
-    final sortedByY = List<Offset>.from(_contour)..sort((a, b) => b.dy.compareTo(a.dy));
-    final bottomPoints = sortedByY.take((_contour.length * 0.2).round()).toList();
-    bottomPoints.sort((a, b) => a.dx.compareTo(b.dx));
-    _leftContact = bottomPoints.first;
-    _rightContact = bottomPoints.last;
-  }
-
-  void _autoSetBaseline() {
-    if (_leftContact == null || _rightContact == null) return;
-    final baselineY = max(_leftContact!.dy, _rightContact!.dy) + 20;
-    _baselineA = Offset(_leftContact!.dx - 50, baselineY);
-    _baselineB = Offset(_rightContact!.dx + 50, baselineY);
-  }
-
   void _calculateAngle() {
-    if (_leftContact == null || _rightContact == null ||
+    if (_leftContact == null || _rightContact == null || 
         _baselineA == null || _baselineB == null || _contour.isEmpty) {
       _measuredAngle = 0.0;
       return;
     }
-
     try {
       final leftTangent = _getTangentAt(_leftContact!);
       final rightTangent = _getTangentAt(_rightContact!);
-
       if (leftTangent != null && rightTangent != null) {
         final baselineVector = _baselineB! - _baselineA!;
         final baselineAngle = baselineVector.direction;
-
         final leftTangentAngle = leftTangent.direction;
         double angleDiff = (leftTangentAngle - baselineAngle).abs();
         if (angleDiff > pi) angleDiff = 2 * pi - angleDiff;
-
         _measuredAngle = angleDiff * 180 / pi;
       } else {
         _measuredAngle = 0.0;
@@ -278,6 +333,7 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
       'baseline_a': {'x': _baselineA!.dx, 'y': _baselineA!.dy},
       'baseline_b': {'x': _baselineB!.dx, 'y': _baselineB!.dy},
       'measured_angle_deg': _measuredAngle,
+      'quality_score': _qualityScore,
       'timestamp': DateTime.now().toIso8601String(),
     };
     final dir = await getTemporaryDirectory();
@@ -290,7 +346,8 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
       ..writeln('contact_point_right,${_rightContact!.dx},${_rightContact!.dy},')
       ..writeln('baseline_a,${_baselineA!.dx},${_baselineA!.dy},')
       ..writeln('baseline_b,${_baselineB!.dx},${_baselineB!.dy},')
-      ..writeln('measured_angle_deg,,${_measuredAngle.toStringAsFixed(3)}');
+      ..writeln('measured_angle_deg,,${_measuredAngle.toStringAsFixed(3)}')
+      ..writeln('quality_score,,${_qualityScore?.toStringAsFixed(3) ?? "N/A"}');
     await csvFile.writeAsString(csv.toString());
     await Share.shareXFiles([XFile(jsonFile.path), XFile(csvFile.path)], text: 'Contact angle data');
   }
@@ -343,10 +400,10 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
               ]),
             ],
           ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
             child: const Text('Got it!', style: TextStyle(color: Colors.tealAccent)),
           ),
         ],
@@ -400,9 +457,9 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
       ),
       child: ElevatedButton(
         onPressed: onPressed,
-        style: ElevatedButton.styleFrom(
+                  style: ElevatedButton.styleFrom(
           backgroundColor: Colors.transparent,
-          foregroundColor: Colors.white,
+                    foregroundColor: Colors.white,
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           elevation: 0,
@@ -413,14 +470,14 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
           children: [
             Icon(icon, size: 22),
             const SizedBox(height: 6),
-            Text(
+                Text(
               label,
               style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
               textAlign: TextAlign.center,
             ),
-          ],
-        ),
-      ),
+              ],
+            ),
+          ),
     );
   }
 
@@ -442,17 +499,17 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
             const Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
-              children: [
+                children: [
                 Text(
                   'Contact Angle',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
-                Text(
+                  Text(
                   'Professional Measurement',
                   style: TextStyle(fontSize: 12, color: Colors.white70),
-                ),
-              ],
-            ),
+                  ),
+                ],
+              ),
           ],
         ),
         backgroundColor: Colors.black,
@@ -472,28 +529,6 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
             onPressed: () => setState(() => _showOverlay = !_showOverlay),
           ),
           _buildAppBarButton(
-            icon: _autoDetectionMode ? Icons.auto_awesome : Icons.touch_app,
-            color: _autoDetectionMode ? Colors.greenAccent : Colors.orangeAccent,
-            tooltip: _autoDetectionMode ? 'Auto Detection ON' : 'Manual Mode ON',
-            onPressed: () {
-              setState(() {
-                _autoDetectionMode = !_autoDetectionMode;
-              });
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(_autoDetectionMode 
-                      ? 'Switched to Automatic Detection Mode' 
-                      : 'Switched to Manual Adjustment Mode'),
-                    backgroundColor: _autoDetectionMode ? Colors.green : Colors.orange,
-                    behavior: SnackBarBehavior.floating,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                );
-              }
-            },
-          ),
-          _buildAppBarButton(
             icon: Icons.help_outline,
             color: Colors.white70,
             tooltip: 'Instructions',
@@ -503,222 +538,31 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
         ],
       ),
       body: Stack(
-        children: [
-          GestureDetector(
-            onPanStart: !_autoDetectionMode ? (details) {
-              final p = details.localPosition;
-              double best = double.infinity;
-              String? bestId;
-              void check(Offset? h, String id) {
-                if (h == null) return;
-                final d = (h - p).distance;
-                if (d < best && d < 50) { // Increased touch area
-                  best = d;
-                  bestId = id;
-                }
-              }
-
-              check(_leftContact, 'left');
-              check(_rightContact, 'right');
-              check(_baselineA, 'ba');
-              check(_baselineB, 'bb');
-              _dragging = bestId;
-              
-              // Provide haptic feedback
-              if (_dragging != null) {
-                HapticFeedback.lightImpact();
-              }
-            } : null,
-            onPanUpdate: !_autoDetectionMode ? (details) {
-              final p = details.localPosition;
-              setState(() {
-                if (_dragging == 'left') {
-                  _leftContact = p;
-                  _calculateAngle();
-                }
-                if (_dragging == 'right') {
-                  _rightContact = p;
-                  _calculateAngle();
-                }
-                if (_dragging == 'ba') {
-                  _baselineA = p;
-                  _calculateAngle();
-                }
-                if (_dragging == 'bb') {
-                  _baselineB = p;
-                  _calculateAngle();
-                }
-              });
-            } : null,
-            onPanEnd: !_autoDetectionMode ? (_) => _dragging = null : null,
-            child: RepaintBoundary(
-              key: _repaintKey,
-              child: CustomPaint(
-                size: Size.infinite,
-                painter: _AnnotatorPainter(
-                  contour: _contour,
-                  leftContact: _leftContact,
-                  rightContact: _rightContact,
-                  baselineA: _baselineA,
-                  baselineB: _baselineB,
-                  showOverlay: _showOverlay,
-                  image: _image,
-                  draggingHandle: _dragging,
-                  autoDetectionMode: _autoDetectionMode,
-                ),
-                child: Container(),
+                    children: [
+                      RepaintBoundary(
+            key: _repaintKey,
+                        child: CustomPaint(
+              size: Size.infinite,
+                          painter: _AnnotatorPainter(
+                            contour: _contour,
+                            leftContact: _leftContact,
+                            rightContact: _rightContact,
+                baselineA: _baselineA,
+                baselineB: _baselineB,
+                showOverlay: _showOverlay,
+                image: _image,
               ),
+              child: Container(),
             ),
           ),
-          // Status and Instructions overlay
-          if (_showOverlay)
-            Positioned(
-              top: 80,
-              left: 16,
-              right: 16,
-              child: Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [
-                      Colors.black.withValues(alpha: 0.95),
-                      Colors.grey[900]!.withValues(alpha: 0.95),
-                    ],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(
-                    color: Colors.tealAccent.withValues(alpha: 0.4),
-                    width: 2,
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.6),
-                      blurRadius: 20,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  children: [
-                    // Mode indicator
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: (_autoDetectionMode ? Colors.greenAccent : Colors.orangeAccent)
-                            .withValues(alpha: 0.2),
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(
-                          color: _autoDetectionMode ? Colors.greenAccent : Colors.orangeAccent,
-                          width: 1,
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            _autoDetectionMode ? Icons.auto_awesome : Icons.touch_app,
-                            color: _autoDetectionMode ? Colors.greenAccent : Colors.orangeAccent,
-                            size: 18,
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            _autoDetectionMode ? 'AUTO DETECTION' : 'MANUAL MODE',
-                            style: TextStyle(
-                              color: _autoDetectionMode ? Colors.greenAccent : Colors.orangeAccent,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 13,
-                              letterSpacing: 0.5,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    // Status
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text(
-                        _processingStatus,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                    ),
-                    if (!_autoDetectionMode && _leftContact != null && _rightContact != null) ...[
-                      const SizedBox(height: 12),
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.05),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: Colors.white.withValues(alpha: 0.1),
-                            width: 1,
-                          ),
-                        ),
-                        child: const Column(
-                          children: [
-                            Row(
-                              children: [
-                                Icon(Icons.circle, color: Colors.red, size: 12),
-                                SizedBox(width: 8),
-                                Text('Contact Points (drag to adjust)', 
-                                     style: TextStyle(color: Colors.white, fontSize: 11)),
-                              ],
-                            ),
-                            SizedBox(height: 4),
-                            Row(
-                              children: [
-                                Icon(Icons.circle, color: Colors.blue, size: 12),
-                                SizedBox(width: 8),
-                                Text('Baseline (drag endpoints)', 
-                                     style: TextStyle(color: Colors.white, fontSize: 11)),
-                              ],
-                            ),
-                            SizedBox(height: 4),
-                            Row(
-                              children: [
-                                Icon(Icons.circle, color: Colors.green, size: 12),
-                                SizedBox(width: 8),
-                                Text('Droplet Contour', 
-                                     style: TextStyle(color: Colors.white, fontSize: 11)),
-                              ],
-                            ),
-                            SizedBox(height: 4),
-                            Row(
-                              children: [
-                                Icon(Icons.remove, color: Colors.yellow, size: 12),
-                                SizedBox(width: 8),
-                                Text('Tangent Lines', 
-                                     style: TextStyle(color: Colors.white, fontSize: 11)),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ),
-          // Processing overlay
           if (_isProcessing)
             Container(
               color: Colors.black.withValues(alpha: 0.85),
               child: Center(
-                child: Container(
+                            child: Container(
                   margin: const EdgeInsets.symmetric(horizontal: 32),
                   padding: const EdgeInsets.all(32),
-                  decoration: BoxDecoration(
+                              decoration: BoxDecoration(
                     gradient: LinearGradient(
                       colors: [
                         Colors.grey[900]!,
@@ -756,11 +600,11 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
                           ),
                           Container(
                             padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
+                              decoration: BoxDecoration(
                               color: Colors.tealAccent.withValues(alpha: 0.2),
                               borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: const Icon(
+                              ),
+                              child: const Icon(
                               Icons.auto_awesome,
                               color: Colors.tealAccent,
                               size: 24,
@@ -772,7 +616,7 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
                       const Text(
                         'AI Analysis in Progress',
                         style: TextStyle(
-                          color: Colors.white,
+                                color: Colors.white,
                           fontSize: 20,
                           fontWeight: FontWeight.bold,
                           letterSpacing: 0.5,
@@ -791,7 +635,7 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
                       const SizedBox(height: 24),
                       Container(
                         padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
+                              decoration: BoxDecoration(
                           color: Colors.white.withValues(alpha: 0.05),
                           borderRadius: BorderRadius.circular(16),
                           border: Border.all(
@@ -819,9 +663,9 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
                                 Text(
                                   'Finding contact points',
                                   style: TextStyle(color: Colors.white70, fontSize: 13),
-                                ),
-                              ],
-                            ),
+                        ),
+                    ],
+                  ),
                             SizedBox(height: 8),
                             Row(
                               children: [
@@ -882,9 +726,8 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Angle display with visual indicator
-                Container(
-                  padding: const EdgeInsets.all(16),
+            Container(
+              padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
                       colors: [
@@ -907,9 +750,9 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
                       ),
                     ],
                   ),
-                  child: Row(
+              child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
+                children: [
                       Container(
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(
@@ -920,10 +763,10 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
                       ),
                       const SizedBox(width: 16),
                       const Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
+                    children: [
+                      Text(
                             'Contact Angle',
                             style: TextStyle(
                               color: Colors.white70,
@@ -931,19 +774,19 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
                               fontWeight: FontWeight.w500,
                             ),
                           ),
-                          Text(
+                        Text(
                             'Measurement Result',
                             style: TextStyle(
                               color: Colors.white54,
                               fontSize: 12,
                             ),
-                          ),
-                        ],
-                      ),
+                        ),
+                    ],
+                  ),
                       const Spacer(),
-                      Container(
+                    Container(
                         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                        decoration: BoxDecoration(
+                      decoration: BoxDecoration(
                           gradient: const LinearGradient(
                             colors: [Colors.tealAccent, Colors.cyanAccent],
                             begin: Alignment.topLeft,
@@ -963,24 +806,84 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
                           style: const TextStyle(
                             color: Colors.black,
                             fontSize: 28,
-                            fontWeight: FontWeight.bold,
+                              fontWeight: FontWeight.bold,
                             letterSpacing: 1.2,
                           ),
-                        ),
+                            ),
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
-                ),
+                    ),
                 const SizedBox(height: 16),
-                // Control buttons row
+                // Quality Score Display
+                if (_qualityScore != null)
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.grey[900],
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: _qualityScore! > 0.8 
+                          ? Colors.green 
+                          : _qualityScore! > 0.6 
+                            ? Colors.orange 
+                            : Colors.red,
+                        width: 2,
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          _qualityScore! > 0.8 
+                            ? Icons.check_circle 
+                            : _qualityScore! > 0.6 
+                              ? Icons.warning 
+                              : Icons.error,
+                          color: _qualityScore! > 0.8 
+                            ? Colors.green 
+                            : _qualityScore! > 0.6 
+                              ? Colors.orange 
+                              : Colors.red,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          'Detection Quality: ${(_qualityScore! * 100).toStringAsFixed(0)}%',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const Spacer(),
+                        Text(
+                          _qualityScore! > 0.8 
+                            ? 'Excellent' 
+                            : _qualityScore! > 0.6 
+                              ? 'Good' 
+                              : 'Poor',
+                          style: TextStyle(
+                            color: _qualityScore! > 0.8 
+                              ? Colors.green 
+                              : _qualityScore! > 0.6 
+                                ? Colors.orange 
+                                : Colors.red,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                const SizedBox(height: 16),
                 Row(
                   children: [
                     Expanded(
                       child: _buildControlButton(
-                        icon: Icons.refresh_rounded,
-                        label: 'Reset',
-                        color: Colors.grey[600]!,
-                        onPressed: () => _initMock(),
+                        icon: Icons.upload_file,
+                        label: 'Load Image',
+                        color: Colors.lightBlue,
+                        onPressed: _captureImage,
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -1001,7 +904,16 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
                         onPressed: _exportJsonCsv,
                       ),
                     ),
-                  ],
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _buildControlButton(
+                        icon: Icons.auto_awesome,
+                        label: 'Run Test Batch',
+                        color: Colors.green,
+                        onPressed: _runTestBatch,
+              ),
+            ),
+        ],
                 ),
               ],
             ),
@@ -1020,8 +932,6 @@ class _AnnotatorPainter extends CustomPainter {
   final Offset? baselineB;
   final bool showOverlay;
   final ui.Image? image;
-  final String? draggingHandle;
-  final bool autoDetectionMode;
 
   _AnnotatorPainter({
     required this.contour,
@@ -1031,76 +941,58 @@ class _AnnotatorPainter extends CustomPainter {
     this.baselineB,
     required this.showOverlay,
     this.image,
-    this.draggingHandle,
-    required this.autoDetectionMode,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Draw background
     if (image != null) {
-      final paint = Paint();
+    final paint = Paint();
       final src = Rect.fromLTWH(0, 0, image!.width.toDouble(), image!.height.toDouble());
       final dst = Rect.fromLTWH(0, 0, size.width, size.height);
       canvas.drawImageRect(image!, src, dst, paint);
     } else {
       canvas.drawRect(Offset.zero & size, Paint()..color = Colors.black);
     }
-
     if (!showOverlay) return;
-
-    // Draw contour with enhanced visibility
     if (contour.isNotEmpty) {
       final Paint contourPaint = Paint()
         ..color = Colors.greenAccent
         ..style = PaintingStyle.stroke
         ..strokeWidth = 3.0;
-      
-      // Add glow effect
       final Paint glowPaint = Paint()
         ..color = Colors.greenAccent.withValues(alpha: 0.3)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 6.0
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.0);
-      
       final Path path = Path()..moveTo(contour[0].dx, contour[0].dy);
       for (final pt in contour.skip(1)) {
         path.lineTo(pt.dx, pt.dy);
       }
       path.close();
-      
       canvas.drawPath(path, glowPaint);
       canvas.drawPath(path, contourPaint);
     }
-
-    // Draw baseline with enhanced visibility
     if (baselineA != null && baselineB != null) {
       final Paint baselineGlowPaint = Paint()
         ..color = Colors.cyanAccent.withValues(alpha: 0.3)
         ..strokeWidth = 6.0
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.0);
-      
       final Paint basePaint = Paint()
         ..color = Colors.cyanAccent
         ..strokeWidth = 3.0
         ..strokeCap = StrokeCap.round;
-      
       canvas.drawLine(baselineA!, baselineB!, baselineGlowPaint);
       canvas.drawLine(baselineA!, baselineB!, basePaint);
     }
-
-    // Draw tangent lines with enhanced visibility
     final Paint tangentGlowPaint = Paint()
       ..color = Colors.amber.withValues(alpha: 0.3)
       ..strokeWidth = 5.0
       ..strokeCap = StrokeCap.round
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.0);
-    
     final Paint tangentPaint = Paint()
       ..color = Colors.amber
       ..strokeWidth = 2.5
       ..strokeCap = StrokeCap.round;
-
     if (leftContact != null && contour.isNotEmpty) {
       final tangent = _getTangentAt(leftContact!);
       if (tangent != null) {
@@ -1111,7 +1003,6 @@ class _AnnotatorPainter extends CustomPainter {
         canvas.drawLine(start, end, tangentPaint);
       }
     }
-
     if (rightContact != null && contour.isNotEmpty) {
       final tangent = _getTangentAt(rightContact!);
       if (tangent != null) {
@@ -1122,106 +1013,60 @@ class _AnnotatorPainter extends CustomPainter {
         canvas.drawLine(start, end, tangentPaint);
       }
     }
-
-    // Draw contact points with enhanced visibility
-    final bool leftDragging = draggingHandle == 'left';
-    final bool rightDragging = draggingHandle == 'right';
-    
-    if (leftContact != null) {
-      _drawContactPoint(canvas, leftContact!, leftDragging);
-    }
-    if (rightContact != null) {
-      _drawContactPoint(canvas, rightContact!, rightDragging);
-    }
-
-    // Draw baseline handles with enhanced visibility
-    final bool baseADragging = draggingHandle == 'ba';
-    final bool baseBDragging = draggingHandle == 'bb';
-    
-    if (baselineA != null) {
-      _drawBaselineHandle(canvas, baselineA!, baseADragging);
-    }
-    if (baselineB != null) {
-      _drawBaselineHandle(canvas, baselineB!, baseBDragging);
-    }
-
-    // Draw angle arc for visual feedback
     if (leftContact != null && rightContact != null && baselineA != null && baselineB != null) {
       _drawAngleArc(canvas);
     }
-
     _drawLegend(canvas);
   }
-
-  void _drawContactPoint(Canvas canvas, Offset point, bool isDragging) {
-    final Color pointColor = autoDetectionMode ? Colors.greenAccent : Colors.redAccent;
-    
+  void _drawContactPoint(Canvas canvas, Offset point) {
+    final Color pointColor = Colors.greenAccent;
     final Paint glowPaint = Paint()
       ..color = pointColor.withValues(alpha: 0.4)
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, isDragging ? 4.0 : 2.0);
-    
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.0);
     final Paint contactPaint = Paint()
       ..color = pointColor
-      ..style = PaintingStyle.fill;
-    
+        ..style = PaintingStyle.fill;
     final Paint borderPaint = Paint()
-      ..color = Colors.white
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = autoDetectionMode ? 3.0 : 2.0;
-    
-    final double radius = autoDetectionMode ? 8.0 : (isDragging ? 12.0 : 10.0);
-    final double glowRadius = autoDetectionMode ? 12.0 : (isDragging ? 16.0 : 14.0);
-    
+        ..color = Colors.white
+        ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.0;
+    const double radius = 8.0;
+    const double glowRadius = 12.0;
     canvas.drawCircle(point, glowRadius, glowPaint);
     canvas.drawCircle(point, radius, contactPaint);
     canvas.drawCircle(point, radius, borderPaint);
-    
-    // Add auto-detection indicator
-    if (autoDetectionMode) {
-      final Paint centerPaint = Paint()..color = Colors.white;
-      canvas.drawCircle(point, 2.0, centerPaint);
-    }
+    final Paint centerPaint = Paint()..color = Colors.white;
+    canvas.drawCircle(point, 2.0, centerPaint);
   }
-
-  void _drawBaselineHandle(Canvas canvas, Offset point, bool isDragging) {
+  void _drawBaselineHandle(Canvas canvas, Offset point) {
     final Paint glowPaint = Paint()
-      ..color = Colors.blueAccent.withValues(alpha: 0.3)
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, isDragging ? 3.0 : 1.5);
-    
+      ..color = Colors.cyanAccent.withValues(alpha: 0.3)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.5);
     final Paint handlePaint = Paint()
-      ..color = Colors.blueAccent
-      ..style = PaintingStyle.fill;
-    
+      ..color = Colors.cyanAccent
+        ..style = PaintingStyle.fill;
     final Paint borderPaint = Paint()
-      ..color = Colors.white
-      ..style = PaintingStyle.stroke
+        ..color = Colors.white
+        ..style = PaintingStyle.stroke
       ..strokeWidth = 2.0;
-    
-    final double radius = isDragging ? 9.0 : 7.0;
-    final double glowRadius = isDragging ? 12.0 : 10.0;
-    
+    const double radius = 7.0;
+    const double glowRadius = 10.0;
     canvas.drawCircle(point, glowRadius, glowPaint);
     canvas.drawCircle(point, radius, handlePaint);
     canvas.drawCircle(point, radius, borderPaint);
   }
-
   void _drawAngleArc(Canvas canvas) {
     if (leftContact == null || baselineA == null || baselineB == null) return;
-    
     final baselineVector = baselineB! - baselineA!;
     final leftVector = leftContact! - baselineA!;
-    
     final Paint arcPaint = Paint()
       ..color = Colors.orange.withValues(alpha: 0.7)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.0;
-    
     final center = baselineA!;
     const radius = 50.0;
-    
     final startAngle = baselineVector.direction;
     final sweepAngle = leftVector.direction - startAngle;
-    
     canvas.drawArc(
       Rect.fromCircle(center: center, radius: radius),
       startAngle,
@@ -1230,7 +1075,6 @@ class _AnnotatorPainter extends CustomPainter {
       arcPaint,
     );
   }
-
   Offset? _getTangentAt(Offset point) {
     if (contour.isEmpty) return null;
     int nearestIndex = 0;
@@ -1247,25 +1091,21 @@ class _AnnotatorPainter extends CustomPainter {
     final tangentVector = next - prev;
     return tangentVector / tangentVector.distance;
   }
-
   void _drawLegend(Canvas canvas) {
-    final textPainter = TextPainter(
+      final textPainter = TextPainter(
       text: const TextSpan(
         text: '🟢 Contour • 🔵 Baseline • 🔴 Contacts • 🟡 Tangents',
         style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w500),
-      ),
-      textDirection: TextDirection.ltr,
-    );
-    textPainter.layout();
-    
+        ),
+        textDirection: TextDirection.ltr,
+      );
+      textPainter.layout();
     final rect = Rect.fromLTWH(12, 12, textPainter.width + 16, textPainter.height + 8);
     final rrect = RRect.fromRectAndRadius(rect, const Radius.circular(8));
     final bgPaint = Paint()..color = Colors.black.withValues(alpha: 0.7);
-    
     canvas.drawRRect(rrect, bgPaint);
     textPainter.paint(canvas, const Offset(20, 16));
   }
-
   @override
   bool shouldRepaint(covariant _AnnotatorPainter oldDelegate) {
     return oldDelegate.contour != contour ||
@@ -1274,8 +1114,6 @@ class _AnnotatorPainter extends CustomPainter {
         oldDelegate.baselineA != baselineA ||
         oldDelegate.baselineB != baselineB ||
         oldDelegate.showOverlay != showOverlay ||
-        oldDelegate.image != image ||
-        oldDelegate.draggingHandle != draggingHandle ||
-        oldDelegate.autoDetectionMode != autoDetectionMode;
+        oldDelegate.image != image;
   }
 }
